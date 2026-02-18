@@ -206,18 +206,17 @@ def simulate_acceleration(mass, area, cd, fr, wheel_radius_m, gear_ratio, motor_
     return np.array(time_list), np.array(speed_list), np.array(disp_list)
 
 # ================== Streamlit 介面 ==================
-st.set_page_config(layout="centered", page_title="電動載具動力估算 v1.2 (i-One 對齊)")
+st.set_page_config(layout="centered", page_title="電動載具動力估算 v1.3")
 
-st.title("⚡ 電動載具動力系統估算 (i-One 參數預設)")
+st.title("⚡ 電動載具動力系統估算 (輸入電池能量求續航)")
 
 # ---------- 側邊欄（輸入參數）----------
 with st.sidebar:
     st.header("🚗 輸入參數")
     vehicle_type = st.selectbox("車種", ['小型電動車', '電動機車', '電動三輪車', '高爾夫球車'], index=1)
 
-    # i-One 換電版車重 88kg (不含電池)
+    # i-One 換電版車重 88kg
     weight = st.number_input("車重 (kg, 不含電池)", min_value=50, value=88, step=5)
-    # 測試騎士重量 63kg
     load = st.number_input("載重 (kg)", min_value=0, value=63, step=5)
     total_mass = weight + load
     st.caption(f"總質量: {total_mass} kg")
@@ -226,7 +225,6 @@ with st.sidebar:
     speed_kmh = st.number_input("目標最高車速 (km/h)", min_value=10, value=74, step=5)
     speed_ms = speed_kmh / 3.6
 
-    # 迎風面積沿用機車典型值
     area = st.number_input("迎風面積 (m²)", min_value=0.3, value=0.61, step=0.05, format="%.2f")
 
     st.subheader("輪胎規格")
@@ -243,14 +241,14 @@ with st.sidebar:
     st.caption(f"計算輪胎半徑: {tire_radius_m:.4f} m")
     wheel_radius_m = tire_radius_m
 
-    # 系統電壓：i-One 電池標稱 50.82V，接近 48V，故預設 48V
+    # 系統電壓預設 48V
     voltage_option = st.radio("系統電壓", ['自動選擇', '48V', '96V'], index=1)
     if voltage_option == '自動選擇':
         voltage = None
     else:
         voltage = int(voltage_option.replace('V', ''))
 
-    # 減速比：根據後輪扭力 147.9Nm 反推 gear = 147.9 / (17 * 0.9) ≈ 9.67，取 9.7
+    # 減速比手動輸入，預設 9.7
     gear_option = st.radio("減速比", ['自動估算', '手動輸入'], index=1)
     if gear_option == '手動輸入':
         gear_ratio = st.number_input("請輸入減速比", min_value=1.0, value=9.7, step=0.5)
@@ -260,7 +258,6 @@ with st.sidebar:
     # ---------- 馬達規格預估 ----------
     st.markdown("---")
     st.subheader("🔧 馬達規格預估")
-    # i-One 最大功率 4.2 kW, 最大扭力 17 Nm
     est_mode = st.radio("估算模式", ['自動估算', '手動輸入'], index=1,
                         help="自動估算：根據目標車速計算所需功率。手動輸入：您可分別設定最大功率與最大扭矩。")
 
@@ -273,6 +270,7 @@ with st.sidebar:
         manual_max_power = max_power_kw
         manual_peak_torque = None
     else:
+        # i-One 最大功率 4.2 kW, 最大扭力 17 Nm
         manual_max_power = st.number_input("最大功率 (kW)", min_value=0.1, value=4.2, step=0.1)
         manual_peak_torque = st.number_input("最大扭矩 (Nm)", min_value=1.0, value=17.0, step=0.1)
         base_speed_calc = (manual_max_power * 1000 * 60) / (2 * math.pi * manual_peak_torque)
@@ -281,10 +279,10 @@ with st.sidebar:
     # ---------- 加速度規格 ----------
     st.markdown("---")
     st.subheader("⚡ 加速度規格")
-    # i-One 0-50km/h 5.6秒，0-最高車速時間暫用15秒
     accel_time_full = st.number_input("0→最高車速加速時間 (秒)", min_value=1.0, value=15.0, step=0.5)
     avg_accel_full = speed_ms / accel_time_full
 
+    # i-One 0-50km/h 5.6秒
     accel_time_0to50 = st.number_input("0→50 km/h 加速時間 (秒)", min_value=1.0, value=5.6, step=0.1)
     speed_50_ms = 50 / 3.6
     avg_accel_50 = speed_50_ms / accel_time_0to50
@@ -297,17 +295,19 @@ with st.sidebar:
     # ---------- 電池容量估算模式 ----------
     st.markdown("---")
     st.subheader("🔋 電池設定")
-    # 預設為手動（基於定速續航），30 km/h 續航 90 km
-    battery_mode = st.radio("電池容量估算模式", ['自動（基於馬達功率）', '手動（基於定速續航）'], index=1,
-                             help="自動：根據馬達額定功率估算1小時放電能量。手動：根據您指定的定速速度和續航里程計算所需能量。")
+    battery_mode = st.radio("電池容量估算模式", ['自動（基於馬達功率）', '手動輸入電池能量'], index=1,
+                             help="自動：根據馬達額定功率估算1小時放電能量。手動：您輸入電池總能量，程式計算定速續航里程。")
 
     if battery_mode == '自動（基於馬達功率）':
         battery_auto = True
+        # 以下變數在手動模式才會用到，先設為 None
+        cruise_speed = None
+        battery_energy_wh = None
     else:
-        # 手動模式預設值 i-One: 30 km/h, 90 km
-        cruise_speed = st.number_input("定速速度 (km/h)", min_value=10, value=30, step=5)
-        target_range = st.number_input("目標續航里程 (km)", min_value=10, value=90, step=5)
         battery_auto = False
+        cruise_speed = st.number_input("定速速度 (km/h)", min_value=10, value=30, step=5)
+        # i-One 電池能量約 1743 Wh
+        battery_energy_wh = st.number_input("電池總能量 (Wh)", min_value=100, value=1743, step=100)
 
     st.markdown("---")
     st.caption("修改參數後，下方結果會自動更新")
@@ -316,7 +316,7 @@ with st.sidebar:
 cd = get_cd_by_vehicle(vehicle_type)
 fr = FR
 
-# 確定電壓（若自動選擇則根據功率）
+# 確定電壓
 if voltage is None:
     if est_mode == '自動估算':
         power_val = manual_max_power
@@ -346,17 +346,23 @@ rated_power = max_power_kw_used / 2
 if battery_auto:
     # 自動模式：以額定功率運行1小時
     battery_spec = estimate_battery_from_power(rated_power, voltage, duration_h=1.0)
+    # 手動模式變數設為 None
+    calculated_range = None
 else:
-    # 手動模式：根據定速續航計算所需能量
+    # 手動模式：根據輸入的電池能量計算續航
     cruise_speed_ms = cruise_speed / 3.6
+    # 計算定速所需功率
     F_roll_cruise = total_mass * G * fr
     F_air_cruise = 0.5 * RHO * cd * area * cruise_speed_ms**2
     F_total_cruise = F_roll_cruise + F_air_cruise
     P_wheel_cruise = F_total_cruise * cruise_speed_ms
     P_motor_cruise = P_wheel_cruise / ETA_DRIVE / 1000  # kW
-    time_h = target_range / cruise_speed
-    energy_needed_wh = P_motor_cruise * 1000 * time_h
-    battery_spec = estimate_battery_from_energy(energy_needed_wh, voltage)
+    # 計算續航里程：里程 = 能量 (Wh) / (功率 (kW) * 1000) * 速度 (km/h)
+    # 注意：能量 Wh，功率 kW，時間 h = 能量 / (功率 * 1000)
+    time_h = battery_energy_wh / (P_motor_cruise * 1000)
+    calculated_range = cruise_speed * time_h
+    # 用輸入的能量產生電池規格
+    battery_spec = estimate_battery_from_energy(battery_energy_wh, voltage)
 
 # 控制器
 controller_spec = estimate_controller(max_power_kw_used, voltage)
@@ -367,17 +373,6 @@ gearbox_spec = {
     '減速比': round(gear_ratio, 2),
     '效率 (%)': 95
 }
-
-# ---------- 定速續航對比（僅手動模式時顯示）----------
-if not battery_auto:
-    actual_energy_wh = battery_spec['能量 (kWh)'] * 1000
-    energy_needed_wh_calc = P_motor_cruise * 1000 * time_h
-    enough = actual_energy_wh >= energy_needed_wh_calc
-else:
-    enough = None
-    energy_needed_wh_calc = None
-    cruise_speed = None
-    target_range = None
 
 # ---------- 起步扭矩需求 ----------
 F_roll_start = total_mass * G * fr
@@ -467,13 +462,10 @@ with st.expander("🔋 電池", expanded=True):
     st.json(battery_spec)
     if not battery_auto:
         st.markdown("---")
-        st.markdown(f"**定速 {cruise_speed} km/h 行駛 {target_range} km 需求**")
-        st.metric("所需能量", f"{energy_needed_wh_calc:.0f} Wh")
-        if enough:
-            st.success("✅ 當前電池能量足夠")
-        else:
-            shortage = energy_needed_wh_calc - actual_energy_wh
-            st.error(f"❌ 當前電池能量不足，短缺 {shortage:.0f} Wh")
+        st.markdown(f"**輸入電池能量 {battery_energy_wh} Wh，定速 {cruise_speed} km/h**")
+        st.metric("計算續航里程", f"{calculated_range:.1f} km")
+        # 也可顯示所需功率
+        st.caption(f"定速所需功率: {P_motor_cruise:.2f} kW")
 
 with st.expander("🎛️ 控制器", expanded=False):
     st.json(controller_spec)
