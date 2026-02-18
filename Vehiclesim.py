@@ -189,9 +189,9 @@ def simulate_acceleration(mass, area, cd, fr, wheel_radius_m, gear_ratio, motor_
     return np.array(time_list), np.array(speed_list), np.array(disp_list)
 
 # ================== Streamlit 介面 ==================
-st.set_page_config(layout="centered", page_title="電動載具動力估算 (手機版)")
+st.set_page_config(layout="centered", page_title="電動載具動力估算 v1.0 優化版")
 
-st.title("⚡ 電動載具動力系統估算 (手機優化版)")
+st.title("⚡ 電動載具動力系統估算 (優化版 v1.0)")
 
 # ---------- 側邊欄（輸入參數）----------
 with st.sidebar:
@@ -220,13 +220,15 @@ with st.sidebar:
     st.caption(f"計算輪胎半徑: {tire_radius_m:.4f} m")
     wheel_radius_m = tire_radius_m
 
-    voltage_option = st.radio("系統電壓", ['自動選擇', '48V', '96V'])
+    # 系統電壓預設為 48V
+    voltage_option = st.radio("系統電壓", ['自動選擇', '48V', '96V'], index=1)  # 預設 48V
     if voltage_option == '自動選擇':
         voltage = None
     else:
         voltage = int(voltage_option.replace('V', ''))
 
-    gear_option = st.radio("減速比", ['自動估算', '手動輸入'])
+    # 減速比預設為手動輸入，值 8.7
+    gear_option = st.radio("減速比", ['自動估算', '手動輸入'], index=1)  # 預設手動輸入
     if gear_option == '手動輸入':
         gear_ratio = st.number_input("請輸入減速比", min_value=1.0, value=8.7, step=0.5)
     else:
@@ -235,7 +237,8 @@ with st.sidebar:
     # ---------- 馬達規格預估 ----------
     st.markdown("---")
     st.subheader("🔧 馬達規格預估")
-    est_mode = st.radio("估算模式", ['自動估算', '手動輸入'], index=0,
+    # 預設為手動輸入
+    est_mode = st.radio("估算模式", ['自動估算', '手動輸入'], index=1,
                         help="自動估算：根據目標車速計算所需功率。手動輸入：您可分別設定最大功率與最大扭矩。")
 
     if est_mode == '自動估算':
@@ -247,15 +250,17 @@ with st.sidebar:
         manual_max_power = max_power_kw
         manual_peak_torque = None
     else:
-        manual_max_power = st.number_input("最大功率 (kW)", min_value=0.1, value=10.24, step=0.1)
-        manual_peak_torque = st.number_input("最大扭矩 (Nm)", min_value=1.0, value=32.6, step=0.1)
+        # 手動輸入預設值 4.2 kW, 17 Nm
+        manual_max_power = st.number_input("最大功率 (kW)", min_value=0.1, value=4.2, step=0.1)
+        manual_peak_torque = st.number_input("最大扭矩 (Nm)", min_value=1.0, value=17.0, step=0.1)
         base_speed_calc = (manual_max_power * 1000 * 60) / (2 * math.pi * manual_peak_torque)
         st.caption(f"對應基速 ≈ {base_speed_calc:.0f} rpm")
 
     # ---------- 加速度規格 ----------
     st.markdown("---")
     st.subheader("⚡ 加速度規格")
-    accel_time_full = st.number_input("0→最高車速加速時間 (秒)", min_value=1.0, value=10.0, step=0.5)
+    # 預設 15 秒
+    accel_time_full = st.number_input("0→最高車速加速時間 (秒)", min_value=1.0, value=15.0, step=0.5)
     avg_accel_full = speed_ms / accel_time_full
 
     accel_time_0to50 = st.number_input("0→50 km/h 加速時間 (秒)", min_value=1.0, value=5.0, step=0.5)
@@ -265,9 +270,13 @@ with st.sidebar:
     # ---------- 爬坡度設定 ----------
     st.markdown("---")
     st.subheader("⛰️ 爬坡設定")
-    grade_percent = st.number_input("爬坡度 (%)", min_value=0.0, value=0.0, step=0.5)
+    # 預設 18%
+    grade_percent = st.number_input("爬坡度 (%)", min_value=0.0, value=18.0, step=0.5)
 
-    use_range = st.checkbox("指定續航里程")
+    # ---------- 續航里程設定 ----------
+    st.markdown("---")
+    st.subheader("🔋 續航設定")
+    use_range = st.checkbox("指定續航里程 (用於電池估算)", value=False)
     if use_range:
         desired_range = st.number_input("期望續航里程 (km)", min_value=1, value=50, step=5)
     else:
@@ -280,6 +289,7 @@ with st.sidebar:
 cd = get_cd_by_vehicle(vehicle_type)
 fr = FR
 
+# 確定電壓（若自動選擇則根據功率）
 if voltage is None:
     if est_mode == '自動估算':
         power_val = manual_max_power
@@ -287,12 +297,15 @@ if voltage is None:
         power_val = manual_max_power
     voltage = 48 if power_val < 20 else 96
 
+# 確定減速比
 if gear_ratio is None:
     gear_ratio = estimate_gearbox(speed_ms, wheel_radius_m)
 
+# 計算馬達最高轉速
 required_max_rpm = speed_ms * 60 / (2 * math.pi * wheel_radius_m) * gear_ratio
 n_max_motor = max(required_max_rpm * 1.1, 6000)
 
+# 根據模式估算馬達
 if est_mode == '自動估算':
     motor_spec, base_speed, T_peak = estimate_motor_from_power(manual_max_power, voltage, n_max_motor, base_speed=3000)
     max_power_kw_used = manual_max_power
@@ -302,22 +315,47 @@ else:
 
 rated_power = max_power_kw_used / 2
 
+# 電池估算（根據續航選項）
 if desired_range:
+    # 假設平均車速為最高車速的 0.7，平均功率為額定功率的 0.7
     avg_speed_ms = speed_ms * 0.7
     avg_speed_kmh = avg_speed_ms * 3.6
     time_h = desired_range / avg_speed_kmh
     avg_power_kw = rated_power * 0.7
     battery_spec = estimate_battery(avg_power_kw, voltage, duration_h=time_h)
 else:
+    # 預設以額定功率運行 1 小時
     battery_spec = estimate_battery(rated_power, voltage, duration_h=1.0)
 
+# 控制器
 controller_spec = estimate_controller(max_power_kw_used, voltage)
 
+# 齒輪箱
 gearbox_spec = {
     '類型': '固定減速比齒輪箱',
     '減速比': round(gear_ratio, 2),
     '效率 (%)': 95
 }
+
+# ---------- 定速 30 km/h 續航需求計算 ----------
+CRUISE_SPEED_KMH = 30.0
+CRUISE_RANGE_KM = 90.0
+cruise_speed_ms = CRUISE_SPEED_KMH / 3.6
+# 計算定速阻力
+F_roll_cruise = total_mass * G * fr
+F_air_cruise = 0.5 * RHO * cd * area * cruise_speed_ms**2
+F_total_cruise = F_roll_cruise + F_air_cruise
+P_wheel_cruise = F_total_cruise * cruise_speed_ms
+P_motor_cruise = P_wheel_cruise / ETA_DRIVE / 1000  # kW
+# 所需時間
+time_h_cruise = CRUISE_RANGE_KM / CRUISE_SPEED_KMH
+# 所需能量 (Wh)
+energy_needed_wh = P_motor_cruise * 1000 * time_h_cruise
+# 對應的電池容量 (Ah) at 系統電壓
+capacity_needed_ah = energy_needed_wh / voltage
+# 當前電池能量 (Wh)
+current_battery_wh = battery_spec['能量 (kWh)'] * 1000
+battery_enough = current_battery_wh >= energy_needed_wh
 
 # ---------- 起步扭矩需求 ----------
 F_roll_start = total_mass * G * fr
@@ -405,6 +443,14 @@ with st.expander("⚡ 加速性能對比", expanded=True):
 
 with st.expander("🔋 電池", expanded=False):
     st.json(battery_spec)
+    st.markdown("---")
+    st.markdown(f"**定速 {CRUISE_SPEED_KMH} km/h 行駛 {CRUISE_RANGE_KM} km 需求**")
+    st.metric("所需能量", f"{energy_needed_wh:.0f} Wh")
+    st.metric("所需容量 (@{voltage}V)", f"{capacity_needed_ah:.1f} Ah")
+    if battery_enough:
+        st.success("✅ 當前電池能量足夠")
+    else:
+        st.error(f"❌ 當前電池能量不足，短缺 {energy_needed_wh - current_battery_wh:.0f} Wh")
 
 with st.expander("🎛️ 控制器", expanded=False):
     st.json(controller_spec)
@@ -512,7 +558,7 @@ fig1.add_trace(
 T_at_max_n = (P_peak * 1000) / (2 * math.pi * n_max_motor / 60) if n_max_motor > 0 else 0
 fig1.add_trace(
     go.Scatter(x=[n_max_motor], y=[T_at_max_n], mode='markers+text', name='最高轉速點',
-               text=[f'{n_max_motor:.0f} rpm, {T_at_max_n:.1f} Nm'],  # 修改此處：加入扭矩值
+               text=[f'{n_max_motor:.0f} rpm, {T_at_max_n:.1f} Nm'],
                textposition='top right',
                marker=dict(color='purple', size=10), textfont=dict(size=10)),
     secondary_y=False
