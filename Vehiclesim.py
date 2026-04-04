@@ -113,15 +113,8 @@ def estimate_gearbox(speed_max_ms, wheel_radius_m):
     gear_ratio = 6000 / wheel_rpm
     return gear_ratio
 
-def calculate_load_curve(mass, area, cd, fr, wheel_radius_m, gear_ratio, speed_max_ms, grade_percent=0, extend_to_vmax=None):
-    """
-    計算負載線，可指定延伸到的最高車速 (km/h)
-    """
-    if extend_to_vmax is None:
-        max_speed = speed_max_ms * 1.1
-    else:
-        max_speed = max(speed_max_ms * 1.1, extend_to_vmax * 1.05)  # 延伸至馬達極速的1.05倍
-    speeds = np.linspace(0, max_speed, 150)
+def calculate_load_curve(mass, area, cd, fr, wheel_radius_m, gear_ratio, speed_max_ms, grade_percent=0):
+    speeds = np.linspace(0, speed_max_ms * 1.1, 100)
     torques = []
     forces = []
     grade_rad = math.atan(grade_percent / 100)
@@ -419,6 +412,7 @@ rated_power = max_power_kw_used / 2
 
 # 電池估算規格（僅用於顯示，不影響里程估計的電池能量）
 if desired_range:
+    # 注意：此處僅為了顯示電池規格，不影響里程估計（里程估計使用 user_battery_energy_kwh）
     avg_speed_ms_display = speed_ms * 0.7
     avg_speed_kmh_display = avg_speed_ms_display * 3.6
     time_h = desired_range / avg_speed_kmh_display
@@ -447,54 +441,17 @@ F_total_start_50 = F_roll_start + F_accel_50
 T_wheel_start_50 = F_total_start_50 * wheel_radius_m
 T_motor_start_50 = T_wheel_start_50 / (gear_ratio * ETA_DRIVE)
 
-# ---------- 馬達外特性曲線（車輪側扭矩 vs 車速）----------
-# 先建立轉速陣列，範圍從0到馬達最高轉速的1.1倍
-n = np.linspace(0, n_max_motor * 1.1, 500)
-T_motor_max = np.zeros_like(n)
-P_motor_out = np.zeros_like(n)
-
-const_idx = n <= base_speed
-T_motor_max[const_idx] = T_peak
-P_motor_out[const_idx] = T_peak * n[const_idx] / 9550
-
-power_idx = (n > base_speed) & (n <= n_max_motor)
-T_motor_max[power_idx] = (max_power_kw_used * 1000) / (2 * math.pi * n[power_idx] / 60)
-P_motor_out[power_idx] = max_power_kw_used
-
-over_idx = n > n_max_motor
-T_motor_max[over_idx] = 0
-P_motor_out[over_idx] = 0
-
-# 轉換為車速 (km/h)
-v_from_n = n / gear_ratio * (2 * math.pi * wheel_radius_m) * 3.6 / 60
-# 最大車輪扭矩
-T_wheel_max = T_motor_max * gear_ratio * ETA_DRIVE
-
-# 計算馬達最高轉速對應的車速
-v_max_motor = n_max_motor / gear_ratio * (2 * math.pi * wheel_radius_m) * 3.6 / 60
-
-# ---------- 負載線（平路與爬坡，延伸至馬達極速）----------
-# 平路負載線
-motor_rpm_flat, torque_flat, speed_kmh_flat, force_flat = calculate_load_curve(
-    total_mass, area, cd, fr, wheel_radius_m, gear_ratio, speed_ms, grade_percent=0,
-    extend_to_vmax=v_max_motor
+# ---------- 負載線 ----------
+motor_rpm_flat, torque_flat,车速_flat, force_flat = calculate_load_curve(
+    total_mass, area, cd, fr, wheel_radius_m, gear_ratio, speed_ms, grade_percent=0
 )
-# 爬坡負載線
+
 if grade_percent > 0:
-    motor_rpm_climb, torque_climb, speed_kmh_climb, force_climb = calculate_load_curve(
-        total_mass, area, cd, fr, wheel_radius_m, gear_ratio, speed_ms, grade_percent,
-        extend_to_vmax=v_max_motor
+    motor_rpm_climb, torque_climb,车速_climb, force_climb = calculate_load_curve(
+        total_mass, area, cd, fr, wheel_radius_m, gear_ratio, speed_ms, grade_percent
     )
 else:
     motor_rpm_climb, torque_climb = None, None
-    speed_kmh_climb = None
-
-# 車輪側扭矩
-T_wheel_flat = force_flat * wheel_radius_m
-if grade_percent > 0:
-    T_wheel_climb = force_climb * wheel_radius_m
-else:
-    T_wheel_climb = None
 
 # ---------- 加速模擬 ----------
 time_acc, speed_acc, disp_acc = simulate_acceleration(
@@ -514,7 +471,8 @@ if np.any(speed_acc >= speed_kmh * 0.99):
 else:
     actual_full_time = np.inf
 
-# ========== 行駛里程估計（使用側邊欄的 avg_speed_kmh）==========
+# ========== 行駛里程估計（使用側邊欄的 avg_speed_kmh，且不覆蓋）==========
+# 注意：此處 avg_speed_kmh 直接來自側邊欄的滑桿計算，不受 desired_range 影響
 avg_speed_ms_est = avg_speed_kmh / 3.6
 F_roll_avg = total_mass * G * fr
 F_air_avg = 0.5 * RHO * cd * area * avg_speed_ms_est**2
@@ -614,7 +572,7 @@ with st.expander("🔁 轉換係數", expanded=False):
     st.metric("車速 (km/h) / 馬達轉速 (rpm)", f"{speed_factor:.6f}")
     st.caption("計算式：(2π × 輪胎半徑(m) × 60) / (減速比 × 1000) × 3.6")
 
-idx_design_local = np.argmin(np.abs(speed_kmh_flat - speed_kmh))
+idx_design_local = np.argmin(np.abs(车速_flat - speed_kmh))
 T_design_flat_local = (force_flat[idx_design_local] * wheel_radius_m)
 F_design_flat_local = force_flat[idx_design_local]
 with st.expander("🔧 設計最高車速點性能", expanded=False):
@@ -682,11 +640,31 @@ st.download_button(
 st.markdown("---")
 
 # ---------- 圖1：馬達 TN 曲線 + 功率曲線 ----------
-# 計算最大轉速範圍（用於 x 軸上限）
+n_max_motor = motor_spec['最高轉速 (rpm)']
+P_peak = motor_spec['最大功率 (kW)']
+
 max_rpm_load = motor_rpm_flat.max() if len(motor_rpm_flat) > 0 else 0
 if motor_rpm_climb is not None:
     max_rpm_load = max(max_rpm_load, motor_rpm_climb.max())
 x_upper = max(n_max_motor, max_rpm_load)
+
+n = np.linspace(0, x_upper, 500)
+T_motor_max = np.zeros_like(n)
+P_motor_out = np.zeros_like(n)
+
+const_idx = n <= base_speed
+T_motor_max[const_idx] = T_peak
+P_motor_out[const_idx] = T_peak * n[const_idx] / 9550
+
+power_idx = (n > base_speed) & (n <= n_max_motor)
+T_motor_max[power_idx] = (P_peak * 1000) / (2 * math.pi * n[power_idx] / 60)
+P_motor_out[power_idx] = P_peak
+
+over_idx = n > n_max_motor
+T_motor_max[over_idx] = 0
+P_motor_out[over_idx] = 0
+
+design_rpm = speed_ms * 60 / (2 * math.pi * wheel_radius_m) * gear_ratio
 
 fig1 = make_subplots(specs=[[{"secondary_y": True}]])
 fig1.add_trace(
@@ -721,7 +699,7 @@ fig1.add_trace(
                marker=dict(color='green', size=12), textfont=dict(size=11)),
     secondary_y=False
 )
-T_at_max_n = (max_power_kw_used * 1000) / (2 * math.pi * n_max_motor / 60) if n_max_motor > 0 else 0
+T_at_max_n = (P_peak * 1000) / (2 * math.pi * n_max_motor / 60) if n_max_motor > 0 else 0
 fig1.add_trace(
     go.Scatter(x=[n_max_motor], y=[T_at_max_n], mode='markers+text', name='最高轉速點',
                text=[f'{n_max_motor:.0f} rpm, {T_at_max_n:.1f} Nm'],
@@ -729,7 +707,6 @@ fig1.add_trace(
                marker=dict(color='purple', size=12), textfont=dict(size=11)),
     secondary_y=False
 )
-design_rpm = speed_ms * 60 / (2 * math.pi * wheel_radius_m) * gear_ratio
 fig1.add_vline(x=design_rpm, line_width=2, line_dash="dash", line_color="orange", opacity=0.9)
 T_at_design = np.interp(design_rpm, n, T_motor_max) if design_rpm <= n_max_motor else 0
 fig1.add_trace(
@@ -755,7 +732,7 @@ for i, (x_cross, y_cross) in enumerate(intersections_flat):
     fig1.add_annotation(x=x_cross, y=y_cross,
                         text=f'{x_cross:.0f} rpm, {y_cross:.1f} Nm',
                         showarrow=True, arrowhead=2, ax=30, ay=-40,
-                        font=dict(size=9))
+                        font=dict(size=10))
 
 if motor_rpm_climb is not None:
     intersections_climb = find_intersection(n, T_motor_max, motor_rpm_climb, torque_climb)
@@ -770,35 +747,44 @@ if motor_rpm_climb is not None:
         fig1.add_annotation(x=x_cross, y=y_cross,
                             text=f'{x_cross:.0f} rpm, {y_cross:.1f} Nm',
                             showarrow=True, arrowhead=2, ax=30, ay=40,
-                            font=dict(size=9))
+                            font=dict(size=10))
 
 fig1.update_layout(
     legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5),
     margin=dict(l=20, r=20, t=40, b=20),
     height=400
 )
-fig1.update_xaxes(title_text="轉速 (rpm)", range=[0, x_upper])
+fig1.update_xaxes(title_text="轉速 (rpm)")
 fig1.update_yaxes(title_text="扭矩 (Nm)", secondary_y=False)
 fig1.update_yaxes(title_text="功率 (kW)", secondary_y=True)
 st.plotly_chart(fig1, use_container_width=True)
 
 st.markdown("---")
 
-# ---------- 圖2：車輪扭矩 vs 車速（已延伸負載線）----------
-# 設計車速點
-idx_design = np.argmin(np.abs(speed_kmh_flat - speed_kmh))
-T_design_flat = T_wheel_flat[idx_design]
+# ---------- 圖2：車輪扭矩 vs 車速 ----------
+v_from_n = n / gear_ratio * (2 * math.pi * wheel_radius_m) * 3.6 / 60
+T_wheel_max = T_motor_max * gear_ratio * ETA_DRIVE
+T_wheel_flat = force_flat * wheel_radius_m
 
-# 計算馬達最高轉速對應車速的扭矩（用於標註）
+if grade_percent > 0:
+    T_wheel_climb = force_climb * wheel_radius_m
+    v_climb =车速_climb
+else:
+    T_wheel_climb = None
+    v_climb = None
+
+idx_design = np.argmin(np.abs(车速_flat - speed_kmh))
+T_design_flat = T_wheel_flat[idx_design]
+v_max_motor = n_max_motor / gear_ratio * (2 * math.pi * wheel_radius_m) * 3.6 / 60
 T_at_vmax = np.interp(v_max_motor, v_from_n, T_wheel_max) if v_max_motor <= v_from_n.max() else 0
 
 fig2 = go.Figure()
 fig2.add_trace(go.Scatter(x=v_from_n, y=T_wheel_max, mode='lines', name='最大車輪扭矩',
                            line=dict(color='blue', width=3)))
-fig2.add_trace(go.Scatter(x=speed_kmh_flat, y=T_wheel_flat, mode='lines', name='平路負載線',
+fig2.add_trace(go.Scatter(x=车速_flat, y=T_wheel_flat, mode='lines', name='平路負載線',
                            line=dict(color='red', width=3, dash='dash')))
 if T_wheel_climb is not None:
-    fig2.add_trace(go.Scatter(x=speed_kmh_climb, y=T_wheel_climb, mode='lines',
+    fig2.add_trace(go.Scatter(x=v_climb, y=T_wheel_climb, mode='lines',
                                name=f'爬坡負載線 ({grade_percent}%)',
                                line=dict(color='green', width=3, dash='dot')))
 
@@ -817,7 +803,7 @@ fig2.add_trace(go.Scatter(x=[v_max_motor], y=[T_at_vmax], mode='markers+text',
                            textfont=dict(size=11)))
 
 # 平路交點
-intersections_flat_wheel = find_intersection(v_from_n, T_wheel_max, speed_kmh_flat, T_wheel_flat)
+intersections_flat_wheel = find_intersection(v_from_n, T_wheel_max, 车速_flat, T_wheel_flat)
 for i, (x_cross, y_cross) in enumerate(intersections_flat_wheel):
     fig2.add_trace(
         go.Scatter(x=[x_cross], y=[y_cross], mode='markers',
@@ -828,11 +814,10 @@ for i, (x_cross, y_cross) in enumerate(intersections_flat_wheel):
     fig2.add_annotation(x=x_cross, y=y_cross,
                         text=f'{x_cross:.1f} km/h',
                         showarrow=True, arrowhead=2, ax=30, ay=-40,
-                        font=dict(size=9))
+                        font=dict(size=10))
 
-# 爬坡交點
 if T_wheel_climb is not None:
-    intersections_climb_wheel = find_intersection(v_from_n, T_wheel_max, speed_kmh_climb, T_wheel_climb)
+    intersections_climb_wheel = find_intersection(v_from_n, T_wheel_max, v_climb, T_wheel_climb)
     for i, (x_cross, y_cross) in enumerate(intersections_climb_wheel):
         fig2.add_trace(
             go.Scatter(x=[x_cross], y=[y_cross], mode='markers',
@@ -843,9 +828,10 @@ if T_wheel_climb is not None:
         fig2.add_annotation(x=x_cross, y=y_cross,
                             text=f'{x_cross:.1f} km/h',
                             showarrow=True, arrowhead=2, ax=30, ay=40,
-                            font=dict(size=9))
+                            font=dict(size=10))
+else:
+    intersections_climb_wheel = []
 
-# 設定 x 軸範圍
 x_vals = [speed_kmh * 1.2, v_max_motor * 1.1]
 if intersections_flat_wheel:
     x_vals.extend([p[0] for p in intersections_flat_wheel])
