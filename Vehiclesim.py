@@ -11,8 +11,8 @@ G = 9.81
 RHO = 1.2
 FR = 0.015
 CD = 0.4
-ETA_DRIVE = 0.9                # 傳動效率（僅用於扭矩轉換，里程計算另有獨立效率）
-ETA_MOTOR = 1.0                 # 馬達效率（設為1，不影響計算，里程時另設）
+ETA_DRIVE = 0.9                # 傳動效率（唯一使用的效率）
+ETA_MOTOR = 1.0                 # 馬達效率（設為1，不影響計算）
 ETA_CONTROLLER = 0.95
 BATTERY_ENERGY_DENSITY = 150
 MOTOR_POWER_DENSITY = 1.0
@@ -189,9 +189,9 @@ def simulate_acceleration(mass, area, cd, fr, wheel_radius_m, gear_ratio, motor_
     return np.array(time_list), np.array(speed_list), np.array(disp_list)
 
 # ================== Streamlit 介面 ==================
-st.set_page_config(layout="centered", page_title="電動載具動力估算 (含里程估計)")
+st.set_page_config(layout="centered", page_title="電動載具動力估算 (里程估計)")
 
-st.title("⚡ 電動載具動力系統估算 (含續航里程)")
+st.title("⚡ 電動載具動力系統估算 (含里程估計)")
 
 # ---------- 側邊欄（輸入參數）----------
 with st.sidebar:
@@ -267,23 +267,25 @@ with st.sidebar:
     st.subheader("⛰️ 爬坡設定")
     grade_percent = st.number_input("爬坡度 (%)", min_value=0.0, value=0.0, step=0.5)
 
-    # ---------- 能耗與里程設定（新增）----------
-    st.markdown("---")
-    st.subheader("🔋 能耗與里程設定")
-    motor_eff = st.number_input("馬達效率 (%)", min_value=50, max_value=100, value=90, step=1,
-                                help="馬達在工作點的平均效率，用於續航估算。")
-    gear_eff = st.number_input("齒輪箱效率 (%)", min_value=50, max_value=100, value=95, step=1,
-                               help="齒輪箱傳動效率，用於續航估算。")
-    battery_soc = st.number_input("電池可用 SOC (%)", min_value=10, max_value=100, value=90, step=5,
-                                  help="電池放電深度限制（避免過放），預設 90%。")
-    avg_speed_ratio = st.number_input("平均車速係數 (相對於最高車速)", min_value=0.3, max_value=1.0, value=0.7, step=0.05,
-                                      help="行駛工況的平均車速 = 最高車速 × 此係數，用於估算續航里程。")
-
-    use_range = st.checkbox("指定續航里程（僅用於電池能量估算）")
+    use_range = st.checkbox("指定續航里程")
     if use_range:
         desired_range = st.number_input("期望續航里程 (km)", min_value=1, value=50, step=5)
     else:
         desired_range = None
+
+    # ---------- 新增：里程估計參數 ----------
+    st.markdown("---")
+    st.subheader("🔋 里程估計參數")
+    motor_eff = st.number_input("馬達效率 (%)", min_value=0.0, max_value=100.0, value=90.0, step=1.0,
+                                help="固定工作點下的馬達效率")
+    gear_eff = st.number_input("齒輪箱效率 (%)", min_value=0.0, max_value=100.0, value=95.0, step=1.0,
+                               help="齒輪箱傳動效率")
+    battery_soc = st.number_input("電池可用 SOC (%)", min_value=0.0, max_value=100.0, value=90.0, step=5.0,
+                                  help="State of Charge，剩餘電量百分比，通常為避免深度放電而保留部分電量")
+    avg_speed_ratio = st.slider("平均車速 / 最高車速 比例", min_value=0.3, max_value=1.0, value=0.7, step=0.05,
+                                help="估計里程時使用的平均車速佔最高車速的比例")
+    avg_speed_kmh = speed_kmh * avg_speed_ratio
+    st.caption(f"計算平均車速: {avg_speed_kmh:.1f} km/h")
 
     st.markdown("---")
     st.caption("修改參數後，下方結果會自動更新")
@@ -314,7 +316,6 @@ else:
 
 rated_power = max_power_kw_used / 2
 
-# 電池估算（若指定續航則用於能量計算，否則預設1小時額定功率）
 if desired_range:
     avg_speed_ms = speed_ms * 0.7
     avg_speed_kmh = avg_speed_ms * 3.6
@@ -382,20 +383,27 @@ if np.any(speed_acc >= speed_kmh * 0.99):
 else:
     actual_full_time = np.inf
 
-# ========== 新增：續航里程估計 ==========
-# 平均車速 (km/h)
-avg_speed_km = speed_kmh * avg_speed_ratio
-avg_speed_ms = avg_speed_km / 3.6
-# 計算在平均車速下所需的輪上功率 (kW)
-_, P_wheel_avg = calculate_power_requirements(total_mass, avg_speed_ms, area, cd, fr)
-# 考慮馬達與齒輪效率後的電池輸出功率 (kW)
-P_battery_avg = P_wheel_avg / (motor_eff/100) / (gear_eff/100)
-# 每公里能耗 (kWh/km)
-energy_per_km = P_battery_avg / avg_speed_km
-# 電池可用能量 (kWh)
-usable_energy = battery_spec['能量 (kWh)'] * (battery_soc / 100)
-# 預估續航里程 (km)
-estimated_range = usable_energy / energy_per_km if energy_per_km > 0 else 0
+# ========== 新增：行駛里程估計 ==========
+# 使用平均車速（由使用者設定比例）計算平均阻力
+avg_speed_ms = avg_speed_kmh / 3.6
+# 計算平均行駛阻力（平路，無坡度）
+F_roll_avg = total_mass * G * fr
+F_air_avg = 0.5 * RHO * cd * area * avg_speed_ms**2
+F_total_avg = F_roll_avg + F_air_avg
+# 平均輪上功率 (kW)
+P_wheel_avg = F_total_avg * avg_speed_ms / 1000
+# 考慮傳動效率、馬達效率後，電池需提供的功率 (kW)
+P_battery_avg = P_wheel_avg / (gear_eff/100) / (motor_eff/100)
+# 電池可用能量 (kWh) = 電池總能量 × SOC
+battery_energy_kwh = battery_spec['能量 (kWh)']
+usable_energy = battery_energy_kwh * (battery_soc / 100)
+# 可行駛時間 (h)
+if P_battery_avg > 0:
+    driving_hours = usable_energy / P_battery_avg
+else:
+    driving_hours = 0
+# 估計里程 (km)
+estimated_range = avg_speed_kmh * driving_hours
 
 # ================== 顯示區 (單欄垂直排列) ==================
 
@@ -455,14 +463,31 @@ with st.expander("🔧 設計最高車速點性能", expanded=False):
     st.metric("最高車速點輪上扭矩", f"{T_design_flat_local:.1f} Nm")
     st.metric("最高車速點輪上推力", f"{F_design_flat_local:.1f} N")
 
-# ---------- 新增：續航里程估計區塊 ----------
-with st.expander("🔋 續航里程估計", expanded=True):
-    st.markdown("**基於平路巡航假設**")
-    st.metric("平均車速 (km/h)", f"{avg_speed_km:.1f}")
-    st.metric("每公里能耗 (kWh/km)", f"{energy_per_km:.3f}")
-    st.metric("電池可用能量 (kWh)", f"{usable_energy:.2f}")
-    st.metric("**預估續航里程 (km)**", f"{estimated_range:.0f}", help="此為理論值，實際里程會受駕駛習慣、地形、溫度等因素影響。")
-    st.caption(f"計算條件：馬達效率 {motor_eff}%，齒輪效率 {gear_eff}%，電池可用 SOC {battery_soc}%")
+# ---------- 新增：里程估計結果展示 ----------
+with st.expander("🔋 行駛里程估計", expanded=True):
+    st.markdown("**估計結果**")
+    st.metric("估計行駛里程", f"{estimated_range:.1f} km")
+    st.metric("可行駛時間", f"{driving_hours:.1f} h")
+    st.markdown("---")
+    st.markdown("**計算公式**")
+    st.latex(r"P_{\text{avg}} = \frac{F_{\text{roll}} + F_{\text{air}}}{1000} \cdot v_{\text{avg}}")
+    st.latex(r"P_{\text{batt}} = \frac{P_{\text{avg}}}{\eta_{\text{gear}} \cdot \eta_{\text{motor}}}")
+    st.latex(r"E_{\text{usable}} = E_{\text{batt}} \cdot \text{SOC}")
+    st.latex(r"t_{\text{drive}} = \frac{E_{\text{usable}}}{P_{\text{batt}}}")
+    st.latex(r"\text{Range} = v_{\text{avg}} \cdot t_{\text{drive}}")
+    st.markdown(f"""
+    - **平均車速** \(v_{\text{{avg}}}\) = {avg_speed_kmh:.1f} km/h  
+    - **滾動阻力** \(F_{\text{{roll}}}\) = {F_roll_avg:.1f} N  
+    - **空氣阻力** \(F_{\text{{air}}}\) = {F_air_avg:.1f} N  
+    - **平均輪上功率** \(P_{\text{{avg}}}\) = {P_wheel_avg:.2f} kW  
+    - **齒輪效率** \(\eta_{\text{{gear}}}\) = {gear_eff}%  
+    - **馬達效率** \(\eta_{\text{{motor}}}\) = {motor_eff}%  
+    - **電池平均輸出功率** \(P_{\text{{batt}}}\) = {P_battery_avg:.2f} kW  
+    - **電池總能量** \(E_{\text{{batt}}}\) = {battery_energy_kwh:.2f} kWh  
+    - **可用 SOC** = {battery_soc}% → **可用能量** \(E_{\text{{usable}}}\) = {usable_energy:.2f} kWh  
+    - **可行駛時間** \(t_{\text{{drive}}}\) = {driving_hours:.1f} h  
+    - **估計里程** = {estimated_range:.1f} km
+    """)
 
 # 下載 Excel
 df_motor = pd.DataFrame([motor_spec])
@@ -743,4 +768,4 @@ fig3.update_yaxes(title_text="位移 (m)", secondary_y=True)
 st.plotly_chart(fig3, use_container_width=True)
 
 st.markdown("---")
-st.caption("💡 提示：圖中紫色虛線為目標 0→50 km/h 加速時間，棕色虛線為目標 0→最高車速加速時間。續航里程為平路巡航理論值。")
+st.caption("💡 提示：圖中紫色虛線為目標 0→50 km/h 加速時間，棕色虛線為目標 0→最高車速加速時間。")
