@@ -145,7 +145,7 @@ def find_intersection(x1, y1, x2, y2):
             intersections.append((x_cross, y_cross))
     return intersections
 
-def simulate_acceleration_with_demand(mass, area, cd, fr, wheel_radius_m, gear_ratio, motor_spec, base_speed, T_peak, speed_max_ms, dt=0.1):
+def simulate_acceleration(mass, area, cd, fr, wheel_radius_m, gear_ratio, motor_spec, base_speed, T_peak, speed_max_ms, dt=0.1):
     n_max = motor_spec['最高轉速 (rpm)']
     P_peak = motor_spec['最大功率 (kW)']
 
@@ -164,9 +164,8 @@ def simulate_acceleration_with_demand(mass, area, cd, fr, wheel_radius_m, gear_r
     v = 0
     x = 0
     time_list = [0]
-    speed_list = [0]      # km/h
+    speed_list = [0]
     disp_list = [0]
-    demand_torque_wheel_list = [0]   # 記錄每個時間點的實際需求扭矩（車輪側）
 
     def resistance(v_ms):
         F_roll = mass * G * fr
@@ -174,16 +173,13 @@ def simulate_acceleration_with_demand(mass, area, cd, fr, wheel_radius_m, gear_r
         return F_roll + F_air
 
     while v < speed_max_ms * 0.99 and t < 60:
-        T_motor = get_max_torque(v)           # 馬達輸出扭矩
+        T_motor = get_max_torque(v)
         F_drive = T_motor * gear_ratio * ETA_DRIVE / wheel_radius_m
         F_resist = resistance(v)
         F_net = F_drive - F_resist
         a = F_net / mass
         if a < 0:
             break
-        # 實際需求扭矩（車輪側）即為 F_drive * wheel_radius_m，但這等於 T_motor * gear_ratio * ETA_DRIVE
-        T_demand_wheel = T_motor * gear_ratio * ETA_DRIVE
-        demand_torque_wheel_list.append(T_demand_wheel)
         v += a * dt
         x += v * dt
         t += dt
@@ -191,7 +187,7 @@ def simulate_acceleration_with_demand(mass, area, cd, fr, wheel_radius_m, gear_r
         speed_list.append(v * 3.6)
         disp_list.append(x)
 
-    return np.array(time_list), np.array(speed_list), np.array(disp_list), np.array(demand_torque_wheel_list)
+    return np.array(time_list), np.array(speed_list), np.array(disp_list)
 
 # ================== 自訂 JSON 渲染（僅數值變化高光為藍色）==================
 def render_json_with_diff(data, default_data):
@@ -447,16 +443,8 @@ if grade_percent > 0:
 else:
     motor_rpm_climb, torque_climb = None, None
 
-# ---------- 0-50加速需求曲線（目標時間）----------
-F_accel_const = total_mass * avg_accel_50
-T_accel_const_motor = F_accel_const * wheel_radius_m / (gear_ratio * ETA_DRIVE)
-v_accel = np.linspace(0, min(50, speed_kmh), 50)
-torque_flat_at_v = np.interp(v_accel, 车速_flat, torque_flat)
-torque_total_accel_motor = torque_flat_at_v + T_accel_const_motor
-torque_total_accel_wheel = torque_total_accel_motor * gear_ratio * ETA_DRIVE
-
-# ---------- 加速模擬（含實際需求扭矩）----------
-time_acc, speed_acc, disp_acc, demand_torque_wheel = simulate_acceleration_with_demand(
+# ---------- 加速模擬 ----------
+time_acc, speed_acc, disp_acc = simulate_acceleration(
     total_mass, area, cd, fr, wheel_radius_m, gear_ratio,
     motor_spec, base_speed, T_peak, speed_ms, dt=0.1
 )
@@ -762,7 +750,7 @@ st.plotly_chart(fig1, use_container_width=True)
 
 st.markdown("---")
 
-# ---------- 圖2：車輪扭矩 vs 車速 ----------
+# ---------- 圖2：車輪扭矩 vs 車速（已移除藍色和橙色虛線）----------
 v_from_n = n / gear_ratio * (2 * math.pi * wheel_radius_m) * 3.6 / 60
 T_wheel_max = T_motor_max * gear_ratio * ETA_DRIVE
 T_wheel_flat = force_flat * wheel_radius_m
@@ -788,14 +776,6 @@ if T_wheel_climb is not None:
     fig2.add_trace(go.Scatter(x=v_climb, y=T_wheel_climb, mode='lines',
                                name=f'爬坡負載線 ({grade_percent}%)',
                                line=dict(color='green', width=3, dash='dot')))
-# 目標加速需求曲線（藍色虛線）
-fig2.add_trace(go.Scatter(x=v_accel, y=torque_total_accel_wheel, mode='lines',
-                           name=f'0-50km/h加速總需求 (目標 {accel_time_0to50}s)',
-                           line=dict(color='blue', width=2, dash='dash')))
-# 新增：實際加速過程中的瞬時需求扭矩（橙色虛線）
-fig2.add_trace(go.Scatter(x=speed_acc, y=demand_torque_wheel, mode='lines',
-                           name=f'實際加速過程中的瞬時需求扭矩 (對應 {actual_0to50:.1f}s 實際時間)',
-                           line=dict(color='orange', width=2, dash='dot')))
 
 fig2.add_vline(x=speed_kmh, line_width=2, line_dash="dash", line_color="orange", opacity=0.9)
 fig2.add_trace(go.Scatter(x=[speed_kmh], y=[T_design_flat], mode='markers+text',
