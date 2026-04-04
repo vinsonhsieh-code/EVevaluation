@@ -13,7 +13,7 @@ RHO = 1.2
 FR = 0.015
 CD = 0.4
 ETA_DRIVE = 0.9                # 傳動效率
-ETA_MOTOR = 1.0                 # 馬達效率（設為1，不影響計算）
+ETA_MOTOR = 1.0                 # 馬達效率（不再使用，改為使用者輸入）
 ETA_CONTROLLER = 0.95
 BATTERY_ENERGY_DENSITY = 150
 MOTOR_POWER_DENSITY = 1.0
@@ -38,7 +38,7 @@ def calculate_power_requirements(mass, speed_ms, area, cd, fr):
     P_motor = P_wheel / ETA_DRIVE / 1000
     return P_motor, F_total
 
-def estimate_motor_from_power(max_power_kw, voltage, n_max, base_speed=3000):
+def estimate_motor_from_power(max_power_kw, voltage, n_max, motor_eff_percent, base_speed=3000):
     rated_power = max_power_kw / 2
     T_peak = (max_power_kw * 1000) / (2 * math.pi * base_speed / 60)
     T_rated = T_peak / 2
@@ -52,12 +52,12 @@ def estimate_motor_from_power(max_power_kw, voltage, n_max, base_speed=3000):
         '最高轉速 (rpm)': round(n_max, 0),
         '基速 (rpm)': base_speed,
         '電壓 (V)': voltage,
-        '效率 (%)': round(ETA_MOTOR * 100, 1),
+        '效率 (%)': round(motor_eff_percent, 1),
         '估計重量 (kg)': round(max_power_kw * MOTOR_POWER_DENSITY, 1)
     }
     return motor_spec, base_speed, T_peak
 
-def estimate_motor_from_params(max_power_kw, peak_torque_Nm, voltage, n_max):
+def estimate_motor_from_params(max_power_kw, peak_torque_Nm, voltage, n_max, motor_eff_percent):
     base_speed = (max_power_kw * 1000 * 60) / (2 * math.pi * peak_torque_Nm)
     if base_speed > n_max:
         base_speed = n_max
@@ -73,7 +73,7 @@ def estimate_motor_from_params(max_power_kw, peak_torque_Nm, voltage, n_max):
         '最高轉速 (rpm)': round(n_max, 0),
         '基速 (rpm)': round(base_speed, 0),
         '電壓 (V)': voltage,
-        '效率 (%)': round(ETA_MOTOR * 100, 1),
+        '效率 (%)': round(motor_eff_percent, 1),
         '估計重量 (kg)': round(max_power_kw * MOTOR_POWER_DENSITY, 1)
     }
     return motor_spec, base_speed, peak_torque_Nm
@@ -189,15 +189,17 @@ def simulate_acceleration(mass, area, cd, fr, wheel_radius_m, gear_ratio, motor_
 
     return np.array(time_list), np.array(speed_list), np.array(disp_list)
 
-# ================== 自訂 JSON 渲染（僅數值變化高光為藍色）==================
+# ================== 自訂 JSON 渲染（淺藍色高光）==================
+LIGHT_BLUE = "#87CEEB"  # 淺天藍
+
 def render_json_with_diff(data, default_data):
     def _format_value(value, default_value):
         is_changed = (value != default_value)
         if isinstance(value, str):
-            color = "blue" if is_changed else "green"
+            color = LIGHT_BLUE if is_changed else "green"
             return f'<span style="color:{color};">"{value}"</span>'
         elif isinstance(value, (int, float)):
-            color = "blue" if is_changed else "orange"
+            color = LIGHT_BLUE if is_changed else "orange"
             return f'<span style="color:{color};">{value}</span>'
         else:
             return str(value)
@@ -231,10 +233,10 @@ def render_battery_with_diff(battery_spec, default_battery_spec):
         default_value = default_battery_spec.get(key, value)
         is_changed = (value != default_value)
         if isinstance(value, (int, float)):
-            color = "blue" if is_changed else "orange"
+            color = LIGHT_BLUE if is_changed else "orange"
             value_str = f'<span style="color:{color};">{value}</span>'
         elif isinstance(value, str):
-            color = "blue" if is_changed else "green"
+            color = LIGHT_BLUE if is_changed else "green"
             value_str = f'<span style="color:{color};">"{value}"</span>'
         else:
             value_str = str(value)
@@ -313,7 +315,7 @@ with st.sidebar:
             voltage = int(voltage_option.replace('V', ''))
 
         est_mode = st.radio("估算模式", ['自動估算', '手動輸入'], index=0,
-                            help="自動估算：根據目標車速計算所需功率。手動輸入：您可分別設定最大功率與最大扭矩。")
+                            help="自動估算：根據目標車速計算所需功率。手動輸入：您可分別設定最大功率、最大扭矩與最高轉速。")
 
         if est_mode == '自動估算':
             cd = get_cd_by_vehicle(vehicle_type)
@@ -323,14 +325,17 @@ with st.sidebar:
             st.info(f"⚡ 所需功率 = {required_power:.2f} kW → 最大功率 = {max_power_kw:.2f} kW")
             manual_max_power = max_power_kw
             manual_peak_torque = None
+            # 自動估算模式下，最高轉速由系統計算（保留餘量）
+            manual_max_rpm = None
         else:
             manual_max_power = st.number_input("最大功率 (kW)", min_value=0.1, value=4.4, step=0.1)
-            manual_peak_torque = st.number_input("最大扭矩 (Nm)", min_value=1.0, value=32.6, step=0.1)
+            manual_peak_torque = st.number_input("最大扭矩 (Nm)", min_value=1.0, value=18.0, step=0.1)
+            manual_max_rpm = st.number_input("最高轉速 (rpm)", min_value=100, value=9000, step=100)
             base_speed_calc = (manual_max_power * 1000 * 60) / (2 * math.pi * manual_peak_torque)
             st.caption(f"對應基速 ≈ {base_speed_calc:.0f} rpm")
 
         motor_eff = st.number_input("馬達效率 (%)", min_value=0.0, max_value=100.0, value=90.0, step=1.0,
-                                    help="固定工作點下的馬達效率，用於里程估計。")
+                                    help="固定工作點下的馬達效率，用於里程估計，也會顯示在馬達規格中。")
 
     # ----- 齒輪 (Gear) 區塊 -----
     with st.expander("🔹 齒輪 (Gear)", expanded=True):
@@ -390,14 +395,19 @@ if voltage is None:
 if gear_ratio is None:
     gear_ratio = estimate_gearbox(speed_ms, wheel_radius_m)
 
-required_max_rpm = speed_ms * 60 / (2 * math.pi * wheel_radius_m) * gear_ratio
-n_max_motor = max(required_max_rpm * 1.1, 6000)
+# 計算馬達最高轉速
+if est_mode == '自動估算':
+    required_max_rpm = speed_ms * 60 / (2 * math.pi * wheel_radius_m) * gear_ratio
+    n_max_motor = max(required_max_rpm * 1.1, 6000)
+else:
+    # 手動模式：直接使用使用者輸入的最高轉速
+    n_max_motor = manual_max_rpm
 
 if est_mode == '自動估算':
-    motor_spec, base_speed, T_peak = estimate_motor_from_power(manual_max_power, voltage, n_max_motor, base_speed=3000)
+    motor_spec, base_speed, T_peak = estimate_motor_from_power(manual_max_power, voltage, n_max_motor, motor_eff, base_speed=3000)
     max_power_kw_used = manual_max_power
 else:
-    motor_spec, base_speed, T_peak = estimate_motor_from_params(manual_max_power, manual_peak_torque, voltage, n_max_motor)
+    motor_spec, base_speed, T_peak = estimate_motor_from_params(manual_max_power, manual_peak_torque, voltage, n_max_motor, motor_eff)
     max_power_kw_used = manual_max_power
 
 rated_power = max_power_kw_used / 2
@@ -750,7 +760,7 @@ st.plotly_chart(fig1, use_container_width=True)
 
 st.markdown("---")
 
-# ---------- 圖2：車輪扭矩 vs 車速（已移除藍色和橙色虛線）----------
+# ---------- 圖2：車輪扭矩 vs 車速 ----------
 v_from_n = n / gear_ratio * (2 * math.pi * wheel_radius_m) * 3.6 / 60
 T_wheel_max = T_motor_max * gear_ratio * ETA_DRIVE
 T_wheel_flat = force_flat * wheel_radius_m
