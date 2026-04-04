@@ -189,20 +189,20 @@ def simulate_acceleration(mass, area, cd, fr, wheel_radius_m, gear_ratio, motor_
 
     return np.array(time_list), np.array(speed_list), np.array(disp_list)
 
-# ================== 自訂 JSON 渲染（僅數值變化高光）==================
+# ================== 自訂 JSON 渲染（僅數值變化高光為藍色）==================
 def render_json_with_diff(data, default_data):
     """
     將 dict 格式化為 HTML，其中：
     - 鍵名預設白色（固定）。
-    - 數值：若與初始值不同則顯示紅色，否則數字橙色、字串綠色。
+    - 數值：若與初始值不同則顯示藍色，否則數字橙色、字串綠色。
     """
     def _format_value(value, default_value):
         is_changed = (value != default_value)
         if isinstance(value, str):
-            color = "red" if is_changed else "green"
+            color = "blue" if is_changed else "green"
             return f'<span style="color:{color};">"{value}"</span>'
         elif isinstance(value, (int, float)):
-            color = "red" if is_changed else "orange"
+            color = "blue" if is_changed else "orange"
             return f'<span style="color:{color};">{value}</span>'
         else:
             return str(value)
@@ -218,7 +218,7 @@ def render_json_with_diff(data, default_data):
     lines.append("}")
     return "<br>".join(lines)
 
-# ================== 電池規格渲染（數值變化高光）==================
+# ================== 電池規格渲染（數值變化高光為藍色）==================
 def render_battery_with_diff(battery_spec, default_battery_spec):
     if default_battery_spec is None:
         default_battery_spec = battery_spec
@@ -238,10 +238,10 @@ def render_battery_with_diff(battery_spec, default_battery_spec):
         default_value = default_battery_spec.get(key, value)
         is_changed = (value != default_value)
         if isinstance(value, (int, float)):
-            color = "red" if is_changed else "orange"
+            color = "blue" if is_changed else "orange"
             value_str = f'<span style="color:{color};">{value}</span>'
         elif isinstance(value, str):
-            color = "red" if is_changed else "green"
+            color = "blue" if is_changed else "green"
             value_str = f'<span style="color:{color};">"{value}"</span>'
         else:
             value_str = str(value)
@@ -293,7 +293,7 @@ with st.sidebar:
 
     # ---------- 爬坡規格 ----------
     st.header("⛰️ 爬坡規格")
-    grade_percent = st.number_input("爬坡度 (%)", min_value=0.0, value=0.0, step=0.5)
+    grade_percent = st.number_input("爬坡度 (%)", min_value=0.0, value=30.0, step=0.5)   # 預設 30%
     if grade_percent > 0:
         grade_angle = math.degrees(math.atan(grade_percent / 100))
         st.caption(f"換算角度: {grade_angle:.2f}°")
@@ -331,7 +331,8 @@ with st.sidebar:
             manual_max_power = max_power_kw
             manual_peak_torque = None
         else:
-            manual_max_power = st.number_input("最大功率 (kW)", min_value=0.1, value=10.24, step=0.1)
+            # 手動輸入模式，預設最大功率改為 4.4 kW
+            manual_max_power = st.number_input("最大功率 (kW)", min_value=0.1, value=4.4, step=0.1)
             manual_peak_torque = st.number_input("最大扭矩 (Nm)", min_value=1.0, value=32.6, step=0.1)
             base_speed_calc = (manual_max_power * 1000 * 60) / (2 * math.pi * manual_peak_torque)
             st.caption(f"對應基速 ≈ {base_speed_calc:.0f} rpm")
@@ -341,7 +342,7 @@ with st.sidebar:
 
     # ----- 齒輪 (Gear) 區塊 -----
     with st.expander("🔹 齒輪 (Gear)", expanded=True):
-        gear_option = st.radio("減速比", ['自動估算', '手動輸入'])
+        gear_option = st.radio("減速比", ['自動估算', '手動輸入'], index=1)   # 預設手動輸入
         if gear_option == '手動輸入':
             gear_ratio = st.number_input("請輸入減速比", min_value=1.0, value=8.7, step=0.5)
         else:
