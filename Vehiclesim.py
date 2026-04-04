@@ -213,11 +213,9 @@ def render_json_with_diff(data, default_data, indent=2):
 
 # ================== 電池規格渲染（支援變化高亮）==================
 def render_battery_with_diff(battery_spec, default_battery_spec):
-    """自訂渲染電池規格，與初始值不同的數值以紅色顯示"""
     if default_battery_spec is None:
         default_battery_spec = battery_spec
     lines = []
-    # 定義每個參數的說明
     descriptions = {
         '類型': '常見的電動載具電池類型，此處為鋰離子電池。',
         '標稱電壓 (V)': '電池組的額定電壓，由串聯電池芯數決定（每芯 3.7V）。',
@@ -232,7 +230,6 @@ def render_battery_with_diff(battery_spec, default_battery_spec):
         value = battery_spec[key]
         default_value = default_battery_spec.get(key, value)
         is_changed = (value != default_value)
-        # 數值顏色：變化則紅色，否則保持默認（此處用橙色或白色，但為統一用橙色，變化用紅色）
         if isinstance(value, (int, float)):
             color = "red" if is_changed else "orange"
             value_str = f'<span style="color:{color};">{value}</span>'
@@ -580,20 +577,26 @@ with st.expander("🔧 設計最高車速點性能", expanded=False):
     st.metric("最高車速點輪上扭矩", f"{T_design_flat_local:.1f} Nm")
     st.metric("最高車速點輪上推力", f"{F_design_flat_local:.1f} N")
 
-# ---------- 行駛里程估計結果展示（加入與期望續航比較）----------
+# ---------- 行駛里程估計結果展示（加入與期望續航比較，兩欄布局）----------
 with st.expander("🔋 行駛里程估計", expanded=True):
     st.markdown("**估計結果**")
-    st.metric("估計行駛里程", f"{estimated_range:.1f} km")
-    st.metric("可行駛時間", f"{driving_hours:.1f} h")
+    col1, col2 = st.columns(2)
+    with col1:
+        st.metric("估計行駛里程", f"{estimated_range:.1f} km")
+        st.metric("可行駛時間", f"{driving_hours:.1f} h")
     
-    # 如果使用者有指定期望續航里程，則進行比較
+    # 如果使用者有指定期望續航里程，則在第二欄顯示比較
     if use_range and desired_range is not None:
-        st.markdown("---")
-        st.markdown("**與期望續航比較**")
-        if estimated_range >= desired_range:
-            st.success(f"✅ 滿足目標：估計里程 {estimated_range:.1f} km ≥ 期望里程 {desired_range:.1f} km")
-        else:
-            st.error(f"❌ 未達目標：估計里程 {estimated_range:.1f} km < 期望里程 {desired_range:.1f} km")
+        with col2:
+            st.metric("期望續航里程", f"{desired_range:.1f} km")
+            # 根據是否滿足目標顯示顏色
+            range_met = estimated_range >= desired_range
+            range_color = "green" if range_met else "red"
+            st.markdown(f'<p style="color:{range_color};">比較結果: 估計里程 {"≥" if range_met else "<"} 期望里程</p>', unsafe_allow_html=True)
+            if range_met:
+                st.success("✅ 滿足目標")
+            else:
+                st.error("❌ 未達目標")
     
     st.markdown("---")
     st.markdown("**計算公式**")
