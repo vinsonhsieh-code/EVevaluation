@@ -294,10 +294,12 @@ with st.sidebar:
     st.caption(f"計算平均車速: {avg_speed_kmh:.1f} km/h")
 
     # ---------- 即時里程估計預覽（連動）----------
-    # 使用當前所有參數計算即時里程
+    # 使用當前所有參數計算即時里程（注意 fr 和 cd 需從常數或車種重新取得）
+    cd_preview = get_cd_by_vehicle(vehicle_type)  # 根據目前選擇的車種取得風阻係數
+    fr_preview = FR                               # 滾動阻力常數
     avg_speed_ms_preview = avg_speed_kmh / 3.6
-    F_roll_preview = total_mass * G * fr
-    F_air_preview = 0.5 * RHO * cd * area * avg_speed_ms_preview**2
+    F_roll_preview = total_mass * G * fr_preview
+    F_air_preview = 0.5 * RHO * cd_preview * area * avg_speed_ms_preview**2
     F_total_preview = F_roll_preview + F_air_preview
     P_wheel_preview = F_total_preview * avg_speed_ms_preview / 1000
     P_batt_preview = P_wheel_preview / (gear_eff/100) / (motor_eff/100)
