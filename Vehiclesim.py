@@ -325,7 +325,6 @@ with st.sidebar:
             st.info(f"⚡ 所需功率 = {required_power:.2f} kW → 最大功率 = {max_power_kw:.2f} kW")
             manual_max_power = max_power_kw
             manual_peak_torque = None
-            # 自動估算模式下，最高轉速由系統計算（保留餘量）
             manual_max_rpm = None
         else:
             manual_max_power = st.number_input("最大功率 (kW)", min_value=0.1, value=4.4, step=0.1)
@@ -400,7 +399,6 @@ if est_mode == '自動估算':
     required_max_rpm = speed_ms * 60 / (2 * math.pi * wheel_radius_m) * gear_ratio
     n_max_motor = max(required_max_rpm * 1.1, 6000)
 else:
-    # 手動模式：直接使用使用者輸入的最高轉速
     n_max_motor = manual_max_rpm
 
 if est_mode == '自動估算':
@@ -412,10 +410,12 @@ else:
 
 rated_power = max_power_kw_used / 2
 
+# 電池估算規格（僅用於顯示，不影響里程估計的電池能量）
 if desired_range:
-    avg_speed_ms = speed_ms * 0.7
-    avg_speed_kmh = avg_speed_ms * 3.6
-    time_h = desired_range / avg_speed_kmh
+    # 注意：此處僅為了顯示電池規格，不影響里程估計（里程估計使用 user_battery_energy_kwh）
+    avg_speed_ms_display = speed_ms * 0.7
+    avg_speed_kmh_display = avg_speed_ms_display * 3.6
+    time_h = desired_range / avg_speed_kmh_display
     avg_power_kw = rated_power * 0.7
     battery_spec = estimate_battery(avg_power_kw, voltage, duration_h=time_h)
 else:
@@ -471,7 +471,8 @@ if np.any(speed_acc >= speed_kmh * 0.99):
 else:
     actual_full_time = np.inf
 
-# ========== 行駛里程估計（使用使用者輸入的電池能量）==========
+# ========== 行駛里程估計（使用側邊欄的 avg_speed_kmh，且不覆蓋）==========
+# 注意：此處 avg_speed_kmh 直接來自側邊欄的滑桿計算，不受 desired_range 影響
 avg_speed_ms_est = avg_speed_kmh / 3.6
 F_roll_avg = total_mass * G * fr
 F_air_avg = 0.5 * RHO * cd * area * avg_speed_ms_est**2
