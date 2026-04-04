@@ -192,22 +192,17 @@ def simulate_acceleration(mass, area, cd, fr, wheel_radius_m, gear_ratio, motor_
 # ================== 自訂 JSON 渲染（比較初始值）==================
 def render_json_with_diff(data, default_data, indent=2):
     """
-    將 dict 格式化為 HTML，其中與 default_data 不同的值以紅色標示。
-    鍵名固定為藍色，數字預設為橙色，字串預設為綠色。
+    將 dict 格式化為 HTML，其中：
+    - 鍵名預設白色，若該項的值與 default_data 不同則鍵名顯示為藍色。
+    - 數值：數字橙色，字串綠色。
     """
     def _format_value(value, default_value):
-        # 檢查是否與預設值不同
-        is_changed = (value != default_value)
+        # 檢查是否與預設值不同（僅用於鍵名顏色判斷，數值顏色不變）
         if isinstance(value, str):
-            # 字串：綠色，變化時紅色
-            color = "red" if is_changed else "green"
-            return f'<span style="color:{color};">"{value}"</span>'
+            return f'<span style="color:green;">"{value}"</span>'
         elif isinstance(value, (int, float)):
-            # 數字：橙色，變化時紅色
-            color = "red" if is_changed else "orange"
-            return f'<span style="color:{color};">{value}</span>'
+            return f'<span style="color:orange;">{value}</span>'
         else:
-            # 其他型態（如布林）直接輸出
             return str(value)
 
     lines = []
@@ -216,8 +211,11 @@ def render_json_with_diff(data, default_data, indent=2):
     for i, key in enumerate(keys):
         value = data[key]
         default_value = default_data.get(key)
-        # 鍵名固定藍色
-        lines.append(f'  <span style="color:blue;">"{key}"</span>: {_format_value(value, default_value)}' + ("," if i < len(keys)-1 else ""))
+        # 判斷值是否改變
+        is_changed = (value != default_value)
+        # 鍵名顏色：改變時藍色，否則白色
+        key_color = "blue" if is_changed else "white"
+        lines.append(f'  <span style="color:{key_color};">"{key}"</span>: {_format_value(value, default_value)}' + ("," if i < len(keys)-1 else ""))
     lines.append("}")
     return "<br>".join(lines)
 
@@ -498,14 +496,17 @@ with st.expander("🏎️ 動態性能表現", expanded=True):
     col_a, col_b = st.columns(2)
     with col_a:
         st.metric("目標 0→50 km/h", f"{accel_time_0to50:.1f} s")
-        st.metric("實際 0→50 km/h", f"{actual_0to50:.1f} s")
+        # 實際值根據是否滿足目標顯示顏色
+        actual_color = "green" if actual_0to50 <= accel_time_0to50 else "red"
+        st.markdown(f'<p style="color:{actual_color};">實際 0→50 km/h: {actual_0to50:.1f} s</p>', unsafe_allow_html=True)
         if actual_0to50 <= accel_time_0to50:
             st.success("✅ 滿足目標")
         else:
             st.error("❌ 未達目標")
     with col_b:
         st.metric("目標 0→最高車速", f"{accel_time_full:.1f} s")
-        st.metric("實際 0→最高車速", f"{actual_full_time:.1f} s")
+        actual_color_full = "green" if actual_full_time <= accel_time_full else "red"
+        st.markdown(f'<p style="color:{actual_color_full};">實際 0→最高車速: {actual_full_time:.1f} s</p>', unsafe_allow_html=True)
         if actual_full_time <= accel_time_full:
             st.success("✅ 滿足目標")
         else:
