@@ -5,6 +5,7 @@ import math
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from io import BytesIO
+import json
 
 # ================== 常數與預設參數 ==================
 G = 9.81
@@ -188,6 +189,38 @@ def simulate_acceleration(mass, area, cd, fr, wheel_radius_m, gear_ratio, motor_
 
     return np.array(time_list), np.array(speed_list), np.array(disp_list)
 
+# ================== 自訂 JSON 渲染（比較初始值）==================
+def render_json_with_diff(data, default_data, indent=2):
+    """
+    將 dict 格式化為 HTML，其中與 default_data 不同的值以紅色標示。
+    鍵名固定為藍色，數字預設為橙色，字串預設為綠色。
+    """
+    def _format_value(value, default_value):
+        # 檢查是否與預設值不同
+        is_changed = (value != default_value)
+        if isinstance(value, str):
+            # 字串：綠色，變化時紅色
+            color = "red" if is_changed else "green"
+            return f'<span style="color:{color};">"{value}"</span>'
+        elif isinstance(value, (int, float)):
+            # 數字：橙色，變化時紅色
+            color = "red" if is_changed else "orange"
+            return f'<span style="color:{color};">{value}</span>'
+        else:
+            # 其他型態（如布林）直接輸出
+            return str(value)
+
+    lines = []
+    lines.append("{")
+    keys = list(data.keys())
+    for i, key in enumerate(keys):
+        value = data[key]
+        default_value = default_data.get(key)
+        # 鍵名固定藍色
+        lines.append(f'  <span style="color:blue;">"{key}"</span>: {_format_value(value, default_value)}' + ("," if i < len(keys)-1 else ""))
+    lines.append("}")
+    return "<br>".join(lines)
+
 # ================== Streamlit 介面 ==================
 st.set_page_config(layout="centered", page_title="電動載具動力估算 (里程估計)")
 
@@ -274,7 +307,7 @@ with st.sidebar:
         base_speed_calc = (manual_max_power * 1000 * 60) / (2 * math.pi * manual_peak_torque)
         st.caption(f"對應基速 ≈ {base_speed_calc:.0f} rpm")
 
-    # ---------- 電池容量規格（原：里程估計電池參數）----------
+    # ---------- 電池容量規格 ----------
     st.markdown("---")
     st.subheader("🔋 電池容量規格")
     user_battery_energy_kwh = st.number_input("電池總能量 (kWh)", min_value=0.5, value=5.0, step=0.5,
@@ -420,13 +453,19 @@ else:
     driving_hours = 0
 estimated_range = avg_speed_kmh * driving_hours
 
+# ================== 儲存初始馬達規格（用於比較變化）==================
+if "default_motor_spec" not in st.session_state:
+    st.session_state.default_motor_spec = motor_spec.copy()
+
 # ================== 顯示區 (單欄垂直排列) ==================
 
 # ---------- 規格摘要 ----------
 st.subheader("📋 規格摘要")
 
 with st.expander("📦 馬達規格", expanded=True):
-    st.json(motor_spec)
+    # 使用自訂渲染函數
+    html = render_json_with_diff(motor_spec, st.session_state.default_motor_spec)
+    st.markdown(html, unsafe_allow_html=True)
 
 # 動態性能表現輸出（合併為一個 expander）
 with st.expander("🏎️ 動態性能表現", expanded=True):
@@ -439,7 +478,6 @@ with st.expander("🏎️ 動態性能表現", expanded=True):
         short = max(0, T_motor_start_full - T_peak, T_motor_start_50 - T_peak)
         st.error(f"❌ 馬達峰值扭矩不足，需增加 {short:.1f} Nm")
     
-    # 修正分段問題：使用 st.markdown 並明確加入換行符號
     st.markdown("""
     **📌 起步所需扭矩的意義：**  
     
@@ -479,9 +517,8 @@ with st.expander("🏎️ 動態性能表現", expanded=True):
         "• 若實際值 ≤ 目標值，代表馬達性能足夠；反之則需提高馬達功率或降低車重。"
     )
 
-# ---------- 電池估算規格（自定義顯示加註解）----------
+# 電池估算規格（自定義顯示加註解）
 with st.expander("🔋 電池 (估算規格)", expanded=False):
-    # 將原本的 st.json 改為自定義文字，並加入註解
     st.markdown(f"""
     - **類型**：{battery_spec['類型']}  
       > 常見的電動載具電池類型，此處為鋰離子電池。
