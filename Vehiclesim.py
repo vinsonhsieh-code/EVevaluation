@@ -11,7 +11,7 @@ G = 9.81
 RHO = 1.2
 FR = 0.015
 CD = 0.4
-ETA_DRIVE = 0.9                # 傳動效率（唯一使用的效率）
+ETA_DRIVE = 0.9                # 傳動效率
 ETA_MOTOR = 1.0                 # 馬達效率（設為1，不影響計算）
 ETA_CONTROLLER = 0.95
 BATTERY_ENERGY_DENSITY = 150
@@ -383,26 +383,19 @@ if np.any(speed_acc >= speed_kmh * 0.99):
 else:
     actual_full_time = np.inf
 
-# ========== 新增：行駛里程估計 ==========
-# 使用平均車速（由使用者設定比例）計算平均阻力
-avg_speed_ms = avg_speed_kmh / 3.6
-# 計算平均行駛阻力（平路，無坡度）
+# ========== 行駛里程估計 ==========
+avg_speed_ms_est = avg_speed_kmh / 3.6
 F_roll_avg = total_mass * G * fr
-F_air_avg = 0.5 * RHO * cd * area * avg_speed_ms**2
+F_air_avg = 0.5 * RHO * cd * area * avg_speed_ms_est**2
 F_total_avg = F_roll_avg + F_air_avg
-# 平均輪上功率 (kW)
-P_wheel_avg = F_total_avg * avg_speed_ms / 1000
-# 考慮傳動效率、馬達效率後，電池需提供的功率 (kW)
+P_wheel_avg = F_total_avg * avg_speed_ms_est / 1000
 P_battery_avg = P_wheel_avg / (gear_eff/100) / (motor_eff/100)
-# 電池可用能量 (kWh) = 電池總能量 × SOC
 battery_energy_kwh = battery_spec['能量 (kWh)']
 usable_energy = battery_energy_kwh * (battery_soc / 100)
-# 可行駛時間 (h)
 if P_battery_avg > 0:
     driving_hours = usable_energy / P_battery_avg
 else:
     driving_hours = 0
-# 估計里程 (km)
 estimated_range = avg_speed_kmh * driving_hours
 
 # ================== 顯示區 (單欄垂直排列) ==================
@@ -463,7 +456,7 @@ with st.expander("🔧 設計最高車速點性能", expanded=False):
     st.metric("最高車速點輪上扭矩", f"{T_design_flat_local:.1f} Nm")
     st.metric("最高車速點輪上推力", f"{F_design_flat_local:.1f} N")
 
-# ---------- 新增：里程估計結果展示 ----------
+# ---------- 里程估計結果展示 ----------
 with st.expander("🔋 行駛里程估計", expanded=True):
     st.markdown("**估計結果**")
     st.metric("估計行駛里程", f"{estimated_range:.1f} km")
@@ -475,17 +468,17 @@ with st.expander("🔋 行駛里程估計", expanded=True):
     st.latex(r"E_{\text{usable}} = E_{\text{batt}} \cdot \text{SOC}")
     st.latex(r"t_{\text{drive}} = \frac{E_{\text{usable}}}{P_{\text{batt}}}")
     st.latex(r"\text{Range} = v_{\text{avg}} \cdot t_{\text{drive}}")
-    st.markdown(f"""
-    - **平均車速** \(v_{\text{{avg}}}\) = {avg_speed_kmh:.1f} km/h  
-    - **滾動阻力** \(F_{\text{{roll}}}\) = {F_roll_avg:.1f} N  
-    - **空氣阻力** \(F_{\text{{air}}}\) = {F_air_avg:.1f} N  
-    - **平均輪上功率** \(P_{\text{{avg}}}\) = {P_wheel_avg:.2f} kW  
-    - **齒輪效率** \(\eta_{\text{{gear}}}\) = {gear_eff}%  
-    - **馬達效率** \(\eta_{\text{{motor}}}\) = {motor_eff}%  
-    - **電池平均輸出功率** \(P_{\text{{batt}}}\) = {P_battery_avg:.2f} kW  
-    - **電池總能量** \(E_{\text{{batt}}}\) = {battery_energy_kwh:.2f} kWh  
-    - **可用 SOC** = {battery_soc}% → **可用能量** \(E_{\text{{usable}}}\) = {usable_energy:.2f} kWh  
-    - **可行駛時間** \(t_{\text{{drive}}}\) = {driving_hours:.1f} h  
+    st.markdown(rf"""
+    - **平均車速** \(v_{{\text{{avg}}}}\) = {avg_speed_kmh:.1f} km/h  
+    - **滾動阻力** \(F_{{\text{{roll}}}}\) = {F_roll_avg:.1f} N  
+    - **空氣阻力** \(F_{{\text{{air}}}}\) = {F_air_avg:.1f} N  
+    - **平均輪上功率** \(P_{{\text{{avg}}}}\) = {P_wheel_avg:.2f} kW  
+    - **齒輪效率** \(\eta_{{\text{{gear}}}}\) = {gear_eff}%  
+    - **馬達效率** \(\eta_{{\text{{motor}}}}\) = {motor_eff}%  
+    - **電池平均輸出功率** \(P_{{\text{{batt}}}}\) = {P_battery_avg:.2f} kW  
+    - **電池總能量** \(E_{{\text{{batt}}}}\) = {battery_energy_kwh:.2f} kWh  
+    - **可用 SOC** = {battery_soc}% → **可用能量** \(E_{{\text{{usable}}}}\) = {usable_energy:.2f} kWh  
+    - **可行駛時間** \(t_{{\text{{drive}}}}\) = {driving_hours:.1f} h  
     - **估計里程** = {estimated_range:.1f} km
     """)
 
