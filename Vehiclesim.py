@@ -189,13 +189,21 @@ def simulate_acceleration(mass, area, cd, fr, wheel_radius_m, gear_ratio, motor_
 
     return np.array(time_list), np.array(speed_list), np.array(disp_list)
 
-# ================== 自訂 JSON 渲染（比較初始值）==================
-def render_json_with_diff(data, default_data, indent=2):
+# ================== 自訂 JSON 渲染（僅數值變化高光）==================
+def render_json_with_diff(data, default_data):
+    """
+    將 dict 格式化為 HTML，其中：
+    - 鍵名預設白色（固定）。
+    - 數值：若與初始值不同則顯示紅色，否則數字橙色、字串綠色。
+    """
     def _format_value(value, default_value):
+        is_changed = (value != default_value)
         if isinstance(value, str):
-            return f'<span style="color:green;">"{value}"</span>'
+            color = "red" if is_changed else "green"
+            return f'<span style="color:{color};">"{value}"</span>'
         elif isinstance(value, (int, float)):
-            return f'<span style="color:orange;">{value}</span>'
+            color = "red" if is_changed else "orange"
+            return f'<span style="color:{color};">{value}</span>'
         else:
             return str(value)
 
@@ -205,13 +213,12 @@ def render_json_with_diff(data, default_data, indent=2):
     for i, key in enumerate(keys):
         value = data[key]
         default_value = default_data.get(key)
-        is_changed = (value != default_value)
-        key_color = "blue" if is_changed else "white"
-        lines.append(f'  <span style="color:{key_color};">"{key}"</span>: {_format_value(value, default_value)}' + ("," if i < len(keys)-1 else ""))
+        # 鍵名固定白色
+        lines.append(f'  <span style="color:white;">"{key}"</span>: {_format_value(value, default_value)}' + ("," if i < len(keys)-1 else ""))
     lines.append("}")
     return "<br>".join(lines)
 
-# ================== 電池規格渲染（支援變化高亮）==================
+# ================== 電池規格渲染（數值變化高光）==================
 def render_battery_with_diff(battery_spec, default_battery_spec):
     if default_battery_spec is None:
         default_battery_spec = battery_spec
@@ -577,19 +584,16 @@ with st.expander("🔧 設計最高車速點性能", expanded=False):
     st.metric("最高車速點輪上扭矩", f"{T_design_flat_local:.1f} Nm")
     st.metric("最高車速點輪上推力", f"{F_design_flat_local:.1f} N")
 
-# ---------- 行駛里程估計結果展示（加入與期望續航比較，兩欄布局）----------
+# ---------- 行駛里程估計結果展示 ----------
 with st.expander("🔋 行駛里程估計", expanded=True):
     st.markdown("**估計結果**")
     col1, col2 = st.columns(2)
     with col1:
         st.metric("估計行駛里程", f"{estimated_range:.1f} km")
         st.metric("可行駛時間", f"{driving_hours:.1f} h")
-    
-    # 如果使用者有指定期望續航里程，則在第二欄顯示比較
     if use_range and desired_range is not None:
         with col2:
             st.metric("期望續航里程", f"{desired_range:.1f} km")
-            # 根據是否滿足目標顯示顏色
             range_met = estimated_range >= desired_range
             range_color = "green" if range_met else "red"
             st.markdown(f'<p style="color:{range_color};">比較結果: 估計里程 {"≥" if range_met else "<"} 期望里程</p>', unsafe_allow_html=True)
@@ -597,7 +601,6 @@ with st.expander("🔋 行駛里程估計", expanded=True):
                 st.success("✅ 滿足目標")
             else:
                 st.error("❌ 未達目標")
-    
     st.markdown("---")
     st.markdown("**計算公式**")
     st.latex(r"P_{\text{avg}} = \frac{F_{\text{roll}} + F_{\text{air}}}{1000} \cdot v_{\text{avg}}")
