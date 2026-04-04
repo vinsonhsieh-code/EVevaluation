@@ -232,15 +232,6 @@ with st.sidebar:
     else:
         gear_ratio = None
 
-    # ---------- 動態性能表現 ----------
-    st.subheader("⚡ 動態性能表現")
-    accel_time_full = st.number_input("0→最高車速加速時間 (秒)", min_value=1.0, value=10.0, step=0.5)
-    avg_accel_full = speed_ms / accel_time_full
-
-    accel_time_0to50 = st.number_input("0→50 km/h 加速時間 (秒)", min_value=1.0, value=5.0, step=0.5)
-    speed_50_ms = 50 / 3.6
-    avg_accel_50 = speed_50_ms / accel_time_0to50
-
     # ---------- 爬坡設定 ----------
     st.subheader("⛰️ 爬坡設定")
     grade_percent = st.number_input("爬坡度 (%)", min_value=0.0, value=0.0, step=0.5)
@@ -251,6 +242,15 @@ with st.sidebar:
         desired_range = st.number_input("期望續航里程 (km)", min_value=1, value=50, step=5)
     else:
         desired_range = None
+
+    # ---------- 動態性能表現 ----------
+    st.subheader("⚡ 動態性能表現")
+    accel_time_full = st.number_input("0→最高車速加速時間 (秒)", min_value=1.0, value=10.0, step=0.5)
+    avg_accel_full = speed_ms / accel_time_full
+
+    accel_time_0to50 = st.number_input("0→50 km/h 加速時間 (秒)", min_value=1.0, value=5.0, step=0.5)
+    speed_50_ms = 50 / 3.6
+    avg_accel_50 = speed_50_ms / accel_time_0to50
 
     # ---------- 馬達規格輸入 ----------
     st.markdown("---")
