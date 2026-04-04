@@ -220,17 +220,14 @@ with st.sidebar:
     st.caption(f"計算輪胎半徑: {tire_radius_m:.4f} m")
     wheel_radius_m = tire_radius_m
 
-    voltage_option = st.radio("系統電壓", ['自動選擇', '48V', '96V'])
-    if voltage_option == '自動選擇':
-        voltage = None
-    else:
-        voltage = int(voltage_option.replace('V', ''))
+    # ---------- 動態性能表現 ----------
+    st.subheader("⚡ 動態性能表現")
+    accel_time_full = st.number_input("0→最高車速加速時間 (秒)", min_value=1.0, value=10.0, step=0.5)
+    avg_accel_full = speed_ms / accel_time_full
 
-    gear_option = st.radio("減速比", ['自動估算', '手動輸入'])
-    if gear_option == '手動輸入':
-        gear_ratio = st.number_input("請輸入減速比", min_value=1.0, value=8.7, step=0.5)
-    else:
-        gear_ratio = None
+    accel_time_0to50 = st.number_input("0→50 km/h 加速時間 (秒)", min_value=1.0, value=5.0, step=0.5)
+    speed_50_ms = 50 / 3.6
+    avg_accel_50 = speed_50_ms / accel_time_0to50
 
     # ---------- 爬坡設定 ----------
     st.subheader("⛰️ 爬坡設定")
@@ -243,18 +240,25 @@ with st.sidebar:
     else:
         desired_range = None
 
-    # ---------- 動態性能表現 ----------
-    st.subheader("⚡ 動態性能表現")
-    accel_time_full = st.number_input("0→最高車速加速時間 (秒)", min_value=1.0, value=10.0, step=0.5)
-    avg_accel_full = speed_ms / accel_time_full
-
-    accel_time_0to50 = st.number_input("0→50 km/h 加速時間 (秒)", min_value=1.0, value=5.0, step=0.5)
-    speed_50_ms = 50 / 3.6
-    avg_accel_50 = speed_50_ms / accel_time_0to50
-
     # ---------- 馬達規格輸入 ----------
     st.markdown("---")
     st.subheader("🔧 馬達規格輸入")
+
+    # 系統電壓（移至馬達規格輸入內）
+    voltage_option = st.radio("系統電壓", ['自動選擇', '48V', '96V'])
+    if voltage_option == '自動選擇':
+        voltage = None
+    else:
+        voltage = int(voltage_option.replace('V', ''))
+
+    # 減速比（移至馬達規格輸入內）
+    gear_option = st.radio("減速比", ['自動估算', '手動輸入'])
+    if gear_option == '手動輸入':
+        gear_ratio = st.number_input("請輸入減速比", min_value=1.0, value=8.7, step=0.5)
+    else:
+        gear_ratio = None
+
+    st.markdown("---")
     est_mode = st.radio("估算模式", ['自動估算', '手動輸入'], index=0,
                         help="自動估算：根據目標車速計算所需功率。手動輸入：您可分別設定最大功率與最大扭矩。")
 
