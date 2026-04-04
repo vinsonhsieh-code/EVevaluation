@@ -191,11 +191,6 @@ def simulate_acceleration(mass, area, cd, fr, wheel_radius_m, gear_ratio, motor_
 
 # ================== 自訂 JSON 渲染（比較初始值）==================
 def render_json_with_diff(data, default_data, indent=2):
-    """
-    將 dict 格式化為 HTML，其中：
-    - 鍵名預設白色，若該項的值與 default_data 不同則鍵名顯示為藍色。
-    - 數值：數字橙色，字串綠色。
-    """
     def _format_value(value, default_value):
         if isinstance(value, str):
             return f'<span style="color:green;">"{value}"</span>'
@@ -215,6 +210,41 @@ def render_json_with_diff(data, default_data, indent=2):
         lines.append(f'  <span style="color:{key_color};">"{key}"</span>: {_format_value(value, default_value)}' + ("," if i < len(keys)-1 else ""))
     lines.append("}")
     return "<br>".join(lines)
+
+# ================== 電池規格渲染（支援變化高亮）==================
+def render_battery_with_diff(battery_spec, default_battery_spec):
+    """自訂渲染電池規格，與初始值不同的數值以紅色顯示"""
+    if default_battery_spec is None:
+        default_battery_spec = battery_spec
+    lines = []
+    # 定義每個參數的說明
+    descriptions = {
+        '類型': '常見的電動載具電池類型，此處為鋰離子電池。',
+        '標稱電壓 (V)': '電池組的額定電壓，由串聯電池芯數決定（每芯 3.7V）。',
+        '容量 (Ah)': '電池組的總電荷容量，並聯電池芯數 × 單芯容量 (2.5Ah)。',
+        '能量 (kWh)': '電池組儲存的總電能 = 電壓 × 容量 / 1000。',
+        '放電倍率 (C)': '表示電池持續放電電流相對於容量的倍率，1C 代表可持續 1 小時放完電。',
+        '串聯數': f'將多顆電池芯串聯以提高電壓。例如 {battery_spec["串聯數"]} 串 × 3.7V ≈ {battery_spec["串聯數"]*3.7:.0f}V。',
+        '並聯數': '將多組串聯電池並聯以提高容量。總容量 = 並聯數 × 單芯容量 (2.5Ah)。',
+        '估計重量 (kg)': '基於能量密度 150 Wh/kg 估算的電池組重量。'
+    }
+    for key in battery_spec.keys():
+        value = battery_spec[key]
+        default_value = default_battery_spec.get(key, value)
+        is_changed = (value != default_value)
+        # 數值顏色：變化則紅色，否則保持默認（此處用橙色或白色，但為統一用橙色，變化用紅色）
+        if isinstance(value, (int, float)):
+            color = "red" if is_changed else "orange"
+            value_str = f'<span style="color:{color};">{value}</span>'
+        elif isinstance(value, str):
+            color = "red" if is_changed else "green"
+            value_str = f'<span style="color:{color};">"{value}"</span>'
+        else:
+            value_str = str(value)
+        lines.append(f"- **{key}**：{value_str}")
+        if key in descriptions:
+            lines.append(f"  > {descriptions[key]}")
+    return "\n".join(lines)
 
 # ================== Streamlit 介面 ==================
 st.set_page_config(layout="centered", page_title="電動載具動力估算 (里程估計)")
@@ -375,6 +405,7 @@ else:
 
 rated_power = max_power_kw_used / 2
 
+# 電池估算（用於規格摘要，里程估計改用使用者輸入）
 if desired_range:
     avg_speed_ms = speed_ms * 0.7
     avg_speed_kmh = avg_speed_ms * 3.6
@@ -456,9 +487,11 @@ else:
     driving_hours = 0
 estimated_range = avg_speed_kmh * driving_hours
 
-# ================== 儲存初始馬達規格（用於比較變化）==================
+# ================== 儲存初始規格（用於比較變化）==================
 if "default_motor_spec" not in st.session_state:
     st.session_state.default_motor_spec = motor_spec.copy()
+if "default_battery_spec" not in st.session_state:
+    st.session_state.default_battery_spec = battery_spec.copy()
 
 # ================== 顯示區 (單欄垂直排列) ==================
 
@@ -521,26 +554,10 @@ with st.expander("🏎️ 動態性能表現", expanded=True):
         "• 若實際值 ≤ 目標值，代表馬達性能足夠；反之則需提高馬達功率或降低車重。"
     )
 
-# 電池估算規格（自定義顯示加註解）
+# 電池估算規格（支援變化高亮）
 with st.expander("🔋 電池 (估算規格)", expanded=False):
-    st.markdown(f"""
-    - **類型**：{battery_spec['類型']}  
-      > 常見的電動載具電池類型，此處為鋰離子電池。
-    - **標稱電壓 (V)**：{battery_spec['標稱電壓 (V)']}  
-      > 電池組的額定電壓，由串聯電池芯數決定（每芯 3.7V）。
-    - **容量 (Ah)**：{battery_spec['容量 (Ah)']}  
-      > 電池組的總電荷容量，並聯電池芯數 × 單芯容量 (2.5Ah)。
-    - **能量 (kWh)**：{battery_spec['能量 (kWh)']}  
-      > 電池組儲存的總電能 = 電壓 × 容量 / 1000。
-    - **放電倍率 (C)**：{battery_spec['放電倍率 (C)']}  
-      > 表示電池持續放電電流相對於容量的倍率，1C 代表可持續 1 小時放完電。
-    - **串聯數**：{battery_spec['串聯數']}  
-      > 將多顆電池芯串聯以提高電壓。例如 {battery_spec['串聯數']} 串 × 3.7V ≈ {battery_spec['串聯數']*3.7:.0f}V。
-    - **並聯數**：{battery_spec['並聯數']}  
-      > 將多組串聯電池並聯以提高容量。總容量 = 並聯數 × 單芯容量 (2.5Ah)。
-    - **估計重量 (kg)**：{battery_spec['估計重量 (kg)']}  
-      > 基於能量密度 150 Wh/kg 估算的電池組重量。
-    """)
+    battery_html = render_battery_with_diff(battery_spec, st.session_state.default_battery_spec)
+    st.markdown(battery_html)
 
 with st.expander("🎛️ 控制器", expanded=False):
     st.json(controller_spec)
@@ -563,11 +580,21 @@ with st.expander("🔧 設計最高車速點性能", expanded=False):
     st.metric("最高車速點輪上扭矩", f"{T_design_flat_local:.1f} Nm")
     st.metric("最高車速點輪上推力", f"{F_design_flat_local:.1f} N")
 
-# ---------- 行駛里程估計結果展示 ----------
+# ---------- 行駛里程估計結果展示（加入與期望續航比較）----------
 with st.expander("🔋 行駛里程估計", expanded=True):
     st.markdown("**估計結果**")
     st.metric("估計行駛里程", f"{estimated_range:.1f} km")
     st.metric("可行駛時間", f"{driving_hours:.1f} h")
+    
+    # 如果使用者有指定期望續航里程，則進行比較
+    if use_range and desired_range is not None:
+        st.markdown("---")
+        st.markdown("**與期望續航比較**")
+        if estimated_range >= desired_range:
+            st.success(f"✅ 滿足目標：估計里程 {estimated_range:.1f} km ≥ 期望里程 {desired_range:.1f} km")
+        else:
+            st.error(f"❌ 未達目標：估計里程 {estimated_range:.1f} km < 期望里程 {desired_range:.1f} km")
+    
     st.markdown("---")
     st.markdown("**計算公式**")
     st.latex(r"P_{\text{avg}} = \frac{F_{\text{roll}} + F_{\text{air}}}{1000} \cdot v_{\text{avg}}")
