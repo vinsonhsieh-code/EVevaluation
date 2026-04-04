@@ -294,9 +294,8 @@ with st.sidebar:
     st.caption(f"計算平均車速: {avg_speed_kmh:.1f} km/h")
 
     # ---------- 即時里程估計預覽（連動）----------
-    # 使用當前所有參數計算即時里程（注意 fr 和 cd 需從常數或車種重新取得）
-    cd_preview = get_cd_by_vehicle(vehicle_type)  # 根據目前選擇的車種取得風阻係數
-    fr_preview = FR                               # 滾動阻力常數
+    cd_preview = get_cd_by_vehicle(vehicle_type)
+    fr_preview = FR
     avg_speed_ms_preview = avg_speed_kmh / 3.6
     F_roll_preview = total_mass * G * fr_preview
     F_air_preview = 0.5 * RHO * cd_preview * area * avg_speed_ms_preview**2
@@ -340,7 +339,6 @@ else:
 
 rated_power = max_power_kw_used / 2
 
-# 電池估算（用於規格摘要，里程估計改用使用者輸入）
 if desired_range:
     avg_speed_ms = speed_ms * 0.7
     avg_speed_kmh = avg_speed_ms * 3.6
@@ -440,6 +438,7 @@ with st.expander("🏎️ 動態性能表現", expanded=True):
     else:
         short = max(0, T_motor_start_full - T_peak, T_motor_start_50 - T_peak)
         st.error(f"❌ 馬達峰值扭矩不足，需增加 {short:.1f} Nm")
+    st.caption("📌 起步所需扭矩：從靜止加速到指定車速（不考慮風阻變化），僅克服滾動阻力與加速力。數值越低代表起步越輕鬆。")
     st.markdown("---")
     st.markdown("**加速性能對比**")
     col_a, col_b = st.columns(2)
@@ -457,6 +456,7 @@ with st.expander("🏎️ 動態性能表現", expanded=True):
             st.success("✅ 滿足目標")
         else:
             st.error("❌ 未達目標")
+    st.caption("📌 加速性能對比：目標值為設計要求，實際值為根據馬達外特性模擬的結果。若實際值大於目標值，表示馬達性能不足。")
 
 with st.expander("🔋 電池 (估算規格)", expanded=False):
     st.json(battery_spec)
@@ -581,13 +581,13 @@ fig1.add_trace(
 fig1.add_trace(
     go.Scatter(x=[0], y=[T_peak], mode='markers+text', name='最大扭矩點',
                text=[f'{T_peak:.1f} Nm'], textposition='bottom right',
-               marker=dict(color='blue', size=10), textfont=dict(size=10)),
+               marker=dict(color='blue', size=12), textfont=dict(size=11)),
     secondary_y=False
 )
 fig1.add_trace(
     go.Scatter(x=[base_speed], y=[T_peak], mode='markers+text', name='基速點',
                text=[f'基速: {base_speed:.0f} rpm'], textposition='top left',
-               marker=dict(color='green', size=10), textfont=dict(size=10)),
+               marker=dict(color='green', size=12), textfont=dict(size=11)),
     secondary_y=False
 )
 T_at_max_n = (P_peak * 1000) / (2 * math.pi * n_max_motor / 60) if n_max_motor > 0 else 0
@@ -595,7 +595,7 @@ fig1.add_trace(
     go.Scatter(x=[n_max_motor], y=[T_at_max_n], mode='markers+text', name='最高轉速點',
                text=[f'{n_max_motor:.0f} rpm, {T_at_max_n:.1f} Nm'],
                textposition='top right',
-               marker=dict(color='purple', size=10), textfont=dict(size=10)),
+               marker=dict(color='purple', size=12), textfont=dict(size=11)),
     secondary_y=False
 )
 fig1.add_vline(x=design_rpm, line_width=2, line_dash="dash", line_color="orange", opacity=0.9)
@@ -605,25 +605,25 @@ fig1.add_trace(
                name='設計車速對應轉速',
                text=[f'{design_rpm:.0f} rpm, {T_at_design:.1f} Nm'],
                textposition='top center',
-               marker=dict(color='orange', size=10),
-               textfont=dict(size=10)),
+               marker=dict(color='orange', size=12),
+               textfont=dict(size=11)),
     secondary_y=False
 )
 
-# 交點
+# 交點標記（✕）並調整標註偏移
 intersections_flat = find_intersection(n, T_motor_max, motor_rpm_flat, torque_flat)
 for i, (x_cross, y_cross) in enumerate(intersections_flat):
     fig1.add_trace(
         go.Scatter(x=[x_cross], y=[y_cross], mode='markers',
                    name=f'平路交點{i+1}' if i==0 else None,
-                   marker=dict(color='red', size=10, symbol='x'),
+                   marker=dict(color='red', size=12, symbol='x'),
                    showlegend=(i==0)),
         secondary_y=False
     )
     fig1.add_annotation(x=x_cross, y=y_cross,
                         text=f'{x_cross:.0f} rpm, {y_cross:.1f} Nm',
-                        showarrow=True, arrowhead=2, ax=20, ay=-30,
-                        font=dict(size=9))
+                        showarrow=True, arrowhead=2, ax=30, ay=-40,
+                        font=dict(size=10))
 
 if motor_rpm_climb is not None:
     intersections_climb = find_intersection(n, T_motor_max, motor_rpm_climb, torque_climb)
@@ -631,14 +631,14 @@ if motor_rpm_climb is not None:
         fig1.add_trace(
             go.Scatter(x=[x_cross], y=[y_cross], mode='markers',
                        name=f'爬坡交點{i+1}' if i==0 else None,
-                       marker=dict(color='green', size=10, symbol='x'),
+                       marker=dict(color='green', size=12, symbol='x'),
                        showlegend=(i==0)),
             secondary_y=False
         )
         fig1.add_annotation(x=x_cross, y=y_cross,
                             text=f'{x_cross:.0f} rpm, {y_cross:.1f} Nm',
-                            showarrow=True, arrowhead=2, ax=20, ay=30,
-                            font=dict(size=9))
+                            showarrow=True, arrowhead=2, ax=30, ay=40,
+                            font=dict(size=10))
 
 fig1.update_layout(
     legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5),
@@ -687,27 +687,27 @@ fig2.add_trace(go.Scatter(x=[speed_kmh], y=[T_design_flat], mode='markers+text',
                            name='設計最高車速點',
                            text=[f'{speed_kmh:.0f} km/h, {T_design_flat:.1f} Nm'],
                            textposition='top right',
-                           marker=dict(color='orange', size=10),
-                           textfont=dict(size=10)))
+                           marker=dict(color='orange', size=12),
+                           textfont=dict(size=11)))
 fig2.add_trace(go.Scatter(x=[v_max_motor], y=[T_at_vmax], mode='markers+text',
                            name='馬達最高轉速對應車速',
                            text=[f'馬達最高速\n{v_max_motor:.0f} km/h, {T_at_vmax:.1f} Nm'],
                            textposition='top left',
-                           marker=dict(color='purple', size=10),
-                           textfont=dict(size=10)))
+                           marker=dict(color='purple', size=12),
+                           textfont=dict(size=11)))
 
 intersections_flat_wheel = find_intersection(v_from_n, T_wheel_max, 车速_flat, T_wheel_flat)
 for i, (x_cross, y_cross) in enumerate(intersections_flat_wheel):
     fig2.add_trace(
         go.Scatter(x=[x_cross], y=[y_cross], mode='markers',
                    name=f'平路交點{i+1}' if i==0 else None,
-                   marker=dict(color='red', size=12, symbol='x'),
+                   marker=dict(color='red', size=14, symbol='x'),
                    showlegend=(i==0))
     )
     fig2.add_annotation(x=x_cross, y=y_cross,
                         text=f'{x_cross:.1f} km/h',
-                        showarrow=True, arrowhead=2, ax=20, ay=-30,
-                        font=dict(size=9))
+                        showarrow=True, arrowhead=2, ax=30, ay=-40,
+                        font=dict(size=10))
 
 if T_wheel_climb is not None:
     intersections_climb_wheel = find_intersection(v_from_n, T_wheel_max, v_climb, T_wheel_climb)
@@ -715,13 +715,13 @@ if T_wheel_climb is not None:
         fig2.add_trace(
             go.Scatter(x=[x_cross], y=[y_cross], mode='markers',
                        name=f'爬坡交點{i+1}' if i==0 else None,
-                       marker=dict(color='green', size=12, symbol='x'),
+                       marker=dict(color='green', size=14, symbol='x'),
                        showlegend=(i==0))
         )
         fig2.add_annotation(x=x_cross, y=y_cross,
                             text=f'{x_cross:.1f} km/h',
-                            showarrow=True, arrowhead=2, ax=20, ay=30,
-                            font=dict(size=9))
+                            showarrow=True, arrowhead=2, ax=30, ay=40,
+                            font=dict(size=10))
 else:
     intersections_climb_wheel = []
 
