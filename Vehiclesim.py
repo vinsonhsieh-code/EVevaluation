@@ -244,14 +244,12 @@ with st.sidebar:
     st.markdown("---")
     st.subheader("🔧 馬達規格輸入")
 
-    # 系統電壓（移至馬達規格輸入內）
     voltage_option = st.radio("系統電壓", ['自動選擇', '48V', '96V'])
     if voltage_option == '自動選擇':
         voltage = None
     else:
         voltage = int(voltage_option.replace('V', ''))
 
-    # 減速比（移至馬達規格輸入內）
     gear_option = st.radio("減速比", ['自動估算', '手動輸入'])
     if gear_option == '手動輸入':
         gear_ratio = st.number_input("請輸入減速比", min_value=1.0, value=8.7, step=0.5)
@@ -294,6 +292,22 @@ with st.sidebar:
                                 help="估計里程時使用的平均車速佔最高車速的比例")
     avg_speed_kmh = speed_kmh * avg_speed_ratio
     st.caption(f"計算平均車速: {avg_speed_kmh:.1f} km/h")
+
+    # ---------- 即時里程估計預覽（連動）----------
+    # 使用當前所有參數計算即時里程
+    avg_speed_ms_preview = avg_speed_kmh / 3.6
+    F_roll_preview = total_mass * G * fr
+    F_air_preview = 0.5 * RHO * cd * area * avg_speed_ms_preview**2
+    F_total_preview = F_roll_preview + F_air_preview
+    P_wheel_preview = F_total_preview * avg_speed_ms_preview / 1000
+    P_batt_preview = P_wheel_preview / (gear_eff/100) / (motor_eff/100)
+    usable_energy_preview = user_battery_energy_kwh * (battery_soc / 100)
+    if P_batt_preview > 0:
+        hours_preview = usable_energy_preview / P_batt_preview
+    else:
+        hours_preview = 0
+    range_preview = avg_speed_kmh * hours_preview
+    st.metric("即時估計里程", f"{range_preview:.1f} km")
 
     st.markdown("---")
     st.caption("修改參數後，下方結果會自動更新")
