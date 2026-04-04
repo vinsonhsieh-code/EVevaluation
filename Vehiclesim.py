@@ -682,6 +682,12 @@ st.download_button(
 st.markdown("---")
 
 # ---------- 圖1：馬達 TN 曲線 + 功率曲線 ----------
+# 計算最大轉速範圍（用於 x 軸上限）
+max_rpm_load = motor_rpm_flat.max() if len(motor_rpm_flat) > 0 else 0
+if motor_rpm_climb is not None:
+    max_rpm_load = max(max_rpm_load, motor_rpm_climb.max())
+x_upper = max(n_max_motor, max_rpm_load)
+
 fig1 = make_subplots(specs=[[{"secondary_y": True}]])
 fig1.add_trace(
     go.Scatter(x=n, y=T_motor_max, mode='lines', name='馬達最大扭矩', line=dict(color='blue', width=3)),
@@ -771,7 +777,7 @@ fig1.update_layout(
     margin=dict(l=20, r=20, t=40, b=20),
     height=400
 )
-fig1.update_xaxes(title_text="轉速 (rpm)", range=[0, max(n_max_motor, max_rpm_load)])
+fig1.update_xaxes(title_text="轉速 (rpm)", range=[0, x_upper])
 fig1.update_yaxes(title_text="扭矩 (Nm)", secondary_y=False)
 fig1.update_yaxes(title_text="功率 (kW)", secondary_y=True)
 st.plotly_chart(fig1, use_container_width=True)
@@ -782,6 +788,9 @@ st.markdown("---")
 # 設計車速點
 idx_design = np.argmin(np.abs(speed_kmh_flat - speed_kmh))
 T_design_flat = T_wheel_flat[idx_design]
+
+# 計算馬達最高轉速對應車速的扭矩（用於標註）
+T_at_vmax = np.interp(v_max_motor, v_from_n, T_wheel_max) if v_max_motor <= v_from_n.max() else 0
 
 fig2 = go.Figure()
 fig2.add_trace(go.Scatter(x=v_from_n, y=T_wheel_max, mode='lines', name='最大車輪扭矩',
