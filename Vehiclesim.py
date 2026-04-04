@@ -145,7 +145,7 @@ def find_intersection(x1, y1, x2, y2):
             intersections.append((x_cross, y_cross))
     return intersections
 
-def simulate_acceleration(mass, area, cd, fr, wheel_radius_m, gear_ratio, motor_spec, base_speed, T_peak, speed_max_ms, dt=0.1):
+def simulate_acceleration_with_demand(mass, area, cd, fr, wheel_radius_m, gear_ratio, motor_spec, base_speed, T_peak, speed_max_ms, dt=0.1):
     n_max = motor_spec['最高轉速 (rpm)']
     P_peak = motor_spec['最大功率 (kW)']
 
@@ -164,8 +164,9 @@ def simulate_acceleration(mass, area, cd, fr, wheel_radius_m, gear_ratio, motor_
     v = 0
     x = 0
     time_list = [0]
-    speed_list = [0]
+    speed_list = [0]      # km/h
     disp_list = [0]
+    demand_torque_wheel_list = [0]   # 記錄每個時間點的實際需求扭矩（車輪側）
 
     def resistance(v_ms):
         F_roll = mass * G * fr
@@ -173,13 +174,16 @@ def simulate_acceleration(mass, area, cd, fr, wheel_radius_m, gear_ratio, motor_
         return F_roll + F_air
 
     while v < speed_max_ms * 0.99 and t < 60:
-        T_motor = get_max_torque(v)
+        T_motor = get_max_torque(v)           # 馬達輸出扭矩
         F_drive = T_motor * gear_ratio * ETA_DRIVE / wheel_radius_m
         F_resist = resistance(v)
         F_net = F_drive - F_resist
         a = F_net / mass
         if a < 0:
             break
+        # 實際需求扭矩（車輪側）即為 F_drive * wheel_radius_m，但這等於 T_motor * gear_ratio * ETA_DRIVE
+        T_demand_wheel = T_motor * gear_ratio * ETA_DRIVE
+        demand_torque_wheel_list.append(T_demand_wheel)
         v += a * dt
         x += v * dt
         t += dt
@@ -187,7 +191,7 @@ def simulate_acceleration(mass, area, cd, fr, wheel_radius_m, gear_ratio, motor_
         speed_list.append(v * 3.6)
         disp_list.append(x)
 
-    return np.array(time_list), np.array(speed_list), np.array(disp_list)
+    return np.array(time_list), np.array(speed_list), np.array(disp_list), np.array(demand_torque_wheel_list)
 
 # ================== 自訂 JSON 渲染（僅數值變化高光為藍色）==================
 def render_json_with_diff(data, default_data):
@@ -451,8 +455,8 @@ torque_flat_at_v = np.interp(v_accel, 车速_flat, torque_flat)
 torque_total_accel_motor = torque_flat_at_v + T_accel_const_motor
 torque_total_accel_wheel = torque_total_accel_motor * gear_ratio * ETA_DRIVE
 
-# ---------- 加速模擬 ----------
-time_acc, speed_acc, disp_acc = simulate_acceleration(
+# ---------- 加速模擬（含實際需求扭矩）----------
+time_acc, speed_acc, disp_acc, demand_torque_wheel = simulate_acceleration_with_demand(
     total_mass, area, cd, fr, wheel_radius_m, gear_ratio,
     motor_spec, base_speed, T_peak, speed_ms, dt=0.1
 )
@@ -468,16 +472,6 @@ if np.any(speed_acc >= speed_kmh * 0.99):
     actual_full_time = time_acc[np.argmax(speed_acc >= speed_kmh * 0.99)]
 else:
     actual_full_time = np.inf
-
-# ---------- 基於實際時間的加速需求曲線（橙色）----------
-if actual_0to50 > 0 and actual_0to50 != np.inf:
-    avg_accel_actual = speed_50_ms / actual_0to50
-    F_accel_actual = total_mass * avg_accel_actual
-    T_accel_actual_motor = F_accel_actual * wheel_radius_m / (gear_ratio * ETA_DRIVE)
-    torque_total_actual_motor = torque_flat_at_v + T_accel_actual_motor
-    torque_total_actual_wheel = torque_total_actual_motor * gear_ratio * ETA_DRIVE
-else:
-    torque_total_actual_wheel = np.zeros_like(v_accel)
 
 # ========== 行駛里程估計（使用使用者輸入的電池能量）==========
 avg_speed_ms_est = avg_speed_kmh / 3.6
@@ -798,9 +792,9 @@ if T_wheel_climb is not None:
 fig2.add_trace(go.Scatter(x=v_accel, y=torque_total_accel_wheel, mode='lines',
                            name=f'0-50km/h加速總需求 (目標 {accel_time_0to50}s)',
                            line=dict(color='blue', width=2, dash='dash')))
-# 新增：基於實際時間的加速需求曲線（橙色虛線）
-fig2.add_trace(go.Scatter(x=v_accel, y=torque_total_actual_wheel, mode='lines',
-                           name=f'若以實際時間 {actual_0to50:.1f}s 為目標的加速需求',
+# 新增：實際加速過程中的瞬時需求扭矩（橙色虛線）
+fig2.add_trace(go.Scatter(x=speed_acc, y=demand_torque_wheel, mode='lines',
+                           name=f'實際加速過程中的瞬時需求扭矩 (對應 {actual_0to50:.1f}s 實際時間)',
                            line=dict(color='orange', width=2, dash='dot')))
 
 fig2.add_vline(x=speed_kmh, line_width=2, line_dash="dash", line_color="orange", opacity=0.9)
