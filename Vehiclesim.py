@@ -145,7 +145,7 @@ def find_intersection(x1, y1, x2, y2):
             intersections.append((x_cross, y_cross))
     return intersections
 
-def simulate_acceleration(mass, area, cd, fr, wheel_radius_m, gear_ratio, motor_spec, base_speed, T_peak, speed_max_ms, dt=0.1):
+def simulate_acceleration_with_demand(mass, area, cd, fr, wheel_radius_m, gear_ratio, motor_spec, base_speed, T_peak, speed_max_ms, dt=0.1):
     n_max = motor_spec['最高轉速 (rpm)']
     P_peak = motor_spec['最大功率 (kW)']
 
@@ -166,6 +166,7 @@ def simulate_acceleration(mass, area, cd, fr, wheel_radius_m, gear_ratio, motor_
     time_list = [0]
     speed_list = [0]
     disp_list = [0]
+    demand_torque_list = [0]   # 記錄每個時間點的實際需求扭矩（馬達側）
 
     def resistance(v_ms):
         F_roll = mass * G * fr
@@ -174,12 +175,13 @@ def simulate_acceleration(mass, area, cd, fr, wheel_radius_m, gear_ratio, motor_
 
     while v < speed_max_ms * 0.99 and t < 60:
         T_motor = get_max_torque(v)
-        F_wheel = T_motor * gear_ratio * ETA_DRIVE / wheel_radius_m
         F_resist = resistance(v)
-        F_net = F_wheel - F_resist
+        F_drive = T_motor * gear_ratio * ETA_DRIVE / wheel_radius_m
+        F_net = F_drive - F_resist
         a = F_net / mass
         if a < 0:
             break
+        demand_torque_list.append(T_motor)
         v += a * dt
         x += v * dt
         t += dt
@@ -187,15 +189,10 @@ def simulate_acceleration(mass, area, cd, fr, wheel_radius_m, gear_ratio, motor_
         speed_list.append(v * 3.6)
         disp_list.append(x)
 
-    return np.array(time_list), np.array(speed_list), np.array(disp_list)
+    return np.array(time_list), np.array(speed_list), np.array(disp_list), np.array(demand_torque_list)
 
 # ================== 自訂 JSON 渲染（僅數值變化高光為藍色）==================
 def render_json_with_diff(data, default_data):
-    """
-    將 dict 格式化為 HTML，其中：
-    - 鍵名預設白色（固定）。
-    - 數值：若與初始值不同則顯示藍色，否則數字橙色、字串綠色。
-    """
     def _format_value(value, default_value):
         is_changed = (value != default_value)
         if isinstance(value, str):
@@ -213,12 +210,10 @@ def render_json_with_diff(data, default_data):
     for i, key in enumerate(keys):
         value = data[key]
         default_value = default_data.get(key)
-        # 鍵名固定白色
         lines.append(f'  <span style="color:white;">"{key}"</span>: {_format_value(value, default_value)}' + ("," if i < len(keys)-1 else ""))
     lines.append("}")
     return "<br>".join(lines)
 
-# ================== 電池規格渲染（數值變化高光為藍色）==================
 def render_battery_with_diff(battery_spec, default_battery_spec):
     if default_battery_spec is None:
         default_battery_spec = battery_spec
@@ -293,7 +288,7 @@ with st.sidebar:
 
     # ---------- 爬坡規格 ----------
     st.header("⛰️ 爬坡規格")
-    grade_percent = st.number_input("爬坡度 (%)", min_value=0.0, value=30.0, step=0.5)   # 預設 30%
+    grade_percent = st.number_input("爬坡度 (%)", min_value=0.0, value=30.0, step=0.5)
     if grade_percent > 0:
         grade_angle = math.degrees(math.atan(grade_percent / 100))
         st.caption(f"換算角度: {grade_angle:.2f}°")
@@ -331,7 +326,6 @@ with st.sidebar:
             manual_max_power = max_power_kw
             manual_peak_torque = None
         else:
-            # 手動輸入模式，預設最大功率改為 4.4 kW
             manual_max_power = st.number_input("最大功率 (kW)", min_value=0.1, value=4.4, step=0.1)
             manual_peak_torque = st.number_input("最大扭矩 (Nm)", min_value=1.0, value=32.6, step=0.1)
             base_speed_calc = (manual_max_power * 1000 * 60) / (2 * math.pi * manual_peak_torque)
@@ -342,7 +336,7 @@ with st.sidebar:
 
     # ----- 齒輪 (Gear) 區塊 -----
     with st.expander("🔹 齒輪 (Gear)", expanded=True):
-        gear_option = st.radio("減速比", ['自動估算', '手動輸入'], index=1)   # 預設手動輸入
+        gear_option = st.radio("減速比", ['自動估算', '手動輸入'], index=1)
         if gear_option == '手動輸入':
             gear_ratio = st.number_input("請輸入減速比", min_value=1.0, value=8.7, step=0.5)
         else:
@@ -410,7 +404,6 @@ else:
 
 rated_power = max_power_kw_used / 2
 
-# 電池估算（用於規格摘要，里程估計改用使用者輸入）
 if desired_range:
     avg_speed_ms = speed_ms * 0.7
     avg_speed_kmh = avg_speed_ms * 3.6
@@ -460,8 +453,8 @@ torque_flat_at_v = np.interp(v_accel, 车速_flat, torque_flat)
 torque_total_accel_motor = torque_flat_at_v + T_accel_const_motor
 torque_total_accel_wheel = torque_total_accel_motor * gear_ratio * ETA_DRIVE
 
-# ---------- 加速模擬 ----------
-time_acc, speed_acc, disp_acc = simulate_acceleration(
+# ---------- 加速模擬（含需求扭矩記錄）----------
+time_acc, speed_acc, disp_acc, demand_torque_motor = simulate_acceleration_with_demand(
     total_mass, area, cd, fr, wheel_radius_m, gear_ratio,
     motor_spec, base_speed, T_peak, speed_ms, dt=0.1
 )
@@ -477,6 +470,9 @@ if np.any(speed_acc >= speed_kmh * 0.99):
     actual_full_time = time_acc[np.argmax(speed_acc >= speed_kmh * 0.99)]
 else:
     actual_full_time = np.inf
+
+# 將需求扭矩轉換為車輪側，並對應到車速
+demand_torque_wheel = demand_torque_motor * gear_ratio * ETA_DRIVE
 
 # ========== 行駛里程估計（使用使用者輸入的電池能量）==========
 avg_speed_ms_est = avg_speed_kmh / 3.6
@@ -559,7 +555,7 @@ with st.expander("🏎️ 動態性能表現", expanded=True):
         "• 若實際值 ≤ 目標值，代表馬達性能足夠；反之則需提高馬達功率或降低車重。"
     )
 
-# 電池估算規格（支援變化高亮）
+# 電池估算規格
 with st.expander("🔋 電池 (估算規格)", expanded=False):
     battery_html = render_battery_with_diff(battery_spec, st.session_state.default_battery_spec)
     st.markdown(battery_html)
@@ -725,7 +721,7 @@ fig1.add_trace(
     secondary_y=False
 )
 
-# 交點標記（✕）並調整標註偏移
+# 交點標記
 intersections_flat = find_intersection(n, T_motor_max, motor_rpm_flat, torque_flat)
 for i, (x_cross, y_cross) in enumerate(intersections_flat):
     fig1.add_trace(
@@ -793,9 +789,14 @@ if T_wheel_climb is not None:
     fig2.add_trace(go.Scatter(x=v_climb, y=T_wheel_climb, mode='lines',
                                name=f'爬坡負載線 ({grade_percent}%)',
                                line=dict(color='green', width=3, dash='dot')))
+# 目標加速需求曲線
 fig2.add_trace(go.Scatter(x=v_accel, y=torque_total_accel_wheel, mode='lines',
-                           name=f'0-50km/h加速總需求 ({accel_time_0to50}s)',
+                           name=f'0-50km/h加速總需求 (目標 {accel_time_0to50}s)',
                            line=dict(color='blue', width=2, dash='dash')))
+# 新增：實際加速需求曲線（對應模擬時間）
+fig2.add_trace(go.Scatter(x=speed_acc, y=demand_torque_wheel, mode='lines',
+                           name=f'實際加速需求 (對應 {actual_0to50:.1f}s 實際時間)',
+                           line=dict(color='orange', width=2, dash='dot')))
 
 fig2.add_vline(x=speed_kmh, line_width=2, line_dash="dash", line_color="orange", opacity=0.9)
 fig2.add_trace(go.Scatter(x=[speed_kmh], y=[T_design_flat], mode='markers+text',
@@ -811,6 +812,7 @@ fig2.add_trace(go.Scatter(x=[v_max_motor], y=[T_at_vmax], mode='markers+text',
                            marker=dict(color='purple', size=12),
                            textfont=dict(size=11)))
 
+# 平路交點
 intersections_flat_wheel = find_intersection(v_from_n, T_wheel_max, 车速_flat, T_wheel_flat)
 for i, (x_cross, y_cross) in enumerate(intersections_flat_wheel):
     fig2.add_trace(
