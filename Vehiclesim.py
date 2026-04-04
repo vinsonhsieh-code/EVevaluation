@@ -197,7 +197,6 @@ def render_json_with_diff(data, default_data, indent=2):
     - 數值：數字橙色，字串綠色。
     """
     def _format_value(value, default_value):
-        # 檢查是否與預設值不同（僅用於鍵名顏色判斷，數值顏色不變）
         if isinstance(value, str):
             return f'<span style="color:green;">"{value}"</span>'
         elif isinstance(value, (int, float)):
@@ -211,9 +210,7 @@ def render_json_with_diff(data, default_data, indent=2):
     for i, key in enumerate(keys):
         value = data[key]
         default_value = default_data.get(key)
-        # 判斷值是否改變
         is_changed = (value != default_value)
-        # 鍵名顏色：改變時藍色，否則白色
         key_color = "blue" if is_changed else "white"
         lines.append(f'  <span style="color:{key_color};">"{key}"</span>: {_format_value(value, default_value)}' + ("," if i < len(keys)-1 else ""))
     lines.append("}")
@@ -226,7 +223,7 @@ st.title("⚡ 電動載具動力系統估算 (含里程估計)")
 
 # ---------- 側邊欄（輸入參數）----------
 with st.sidebar:
-    st.header("🚗 整車參數")
+    st.header("🚗 整車參數規格")
     vehicle_type = st.selectbox("車種", ['小型電動車', '電動機車', '電動三輪車', '高爾夫球車'], index=1)
     weight = st.number_input("車重 (kg, 不含電池)", min_value=50, value=98, step=10)
     load = st.number_input("載重 (kg)", min_value=0, value=63, step=10)
@@ -251,8 +248,8 @@ with st.sidebar:
     st.caption(f"計算輪胎半徑: {tire_radius_m:.4f} m")
     wheel_radius_m = tire_radius_m
 
-    # ---------- 動態性能表現 ----------
-    st.subheader("⚡ 動態性能表現")
+    # ---------- 動態性能表現規格 ----------
+    st.header("⚡ 動態性能表現規格")
     accel_time_full = st.number_input("0→最高車速加速時間 (秒)", min_value=1.0, value=10.0, step=0.5)
     avg_accel_full = speed_ms / accel_time_full
 
@@ -260,65 +257,73 @@ with st.sidebar:
     speed_50_ms = 50 / 3.6
     avg_accel_50 = speed_50_ms / accel_time_0to50
 
-    # ---------- 爬坡設定 ----------
-    st.subheader("⛰️ 爬坡設定")
+    # ---------- 爬坡規格 ----------
+    st.header("⛰️ 爬坡規格")
     grade_percent = st.number_input("爬坡度 (%)", min_value=0.0, value=0.0, step=0.5)
+    if grade_percent > 0:
+        grade_angle = math.degrees(math.atan(grade_percent / 100))
+        st.caption(f"換算角度: {grade_angle:.2f}°")
+    else:
+        st.caption("換算角度: 0°")
 
-    # ---------- 指定續航里程 ----------
+    # ---------- 續航里程規格 ----------
+    st.header("🔋 續航里程規格")
     use_range = st.checkbox("指定續航里程 (用於電池估算)")
     if use_range:
         desired_range = st.number_input("期望續航里程 (km)", min_value=1, value=50, step=5)
     else:
         desired_range = None
 
-    # ---------- 馬達規格輸入 ----------
-    st.markdown("---")
-    st.subheader("🔧 馬達規格輸入")
+    # ---------- 輸入動力鍊規格 ----------
+    st.header("🔧 輸入動力鍊 (Powertrain) 規格")
 
-    voltage_option = st.radio("系統電壓", ['自動選擇', '48V', '96V'])
-    if voltage_option == '自動選擇':
-        voltage = None
-    else:
-        voltage = int(voltage_option.replace('V', ''))
+    # ----- 馬達 (Motor) 區塊 -----
+    with st.expander("🔹 馬達 (Motor)", expanded=True):
+        voltage_option = st.radio("系統電壓", ['自動選擇', '48V', '96V'])
+        if voltage_option == '自動選擇':
+            voltage = None
+        else:
+            voltage = int(voltage_option.replace('V', ''))
 
-    gear_option = st.radio("減速比", ['自動估算', '手動輸入'])
-    if gear_option == '手動輸入':
-        gear_ratio = st.number_input("請輸入減速比", min_value=1.0, value=8.7, step=0.5)
-    else:
-        gear_ratio = None
+        est_mode = st.radio("估算模式", ['自動估算', '手動輸入'], index=0,
+                            help="自動估算：根據目標車速計算所需功率。手動輸入：您可分別設定最大功率與最大扭矩。")
 
-    st.markdown("---")
-    est_mode = st.radio("估算模式", ['自動估算', '手動輸入'], index=0,
-                        help="自動估算：根據目標車速計算所需功率。手動輸入：您可分別設定最大功率與最大扭矩。")
+        if est_mode == '自動估算':
+            cd = get_cd_by_vehicle(vehicle_type)
+            fr = FR
+            required_power, _ = calculate_power_requirements(total_mass, speed_ms, area, cd, fr)
+            max_power_kw = required_power * 2
+            st.info(f"⚡ 所需功率 = {required_power:.2f} kW → 最大功率 = {max_power_kw:.2f} kW")
+            manual_max_power = max_power_kw
+            manual_peak_torque = None
+        else:
+            manual_max_power = st.number_input("最大功率 (kW)", min_value=0.1, value=10.24, step=0.1)
+            manual_peak_torque = st.number_input("最大扭矩 (Nm)", min_value=1.0, value=32.6, step=0.1)
+            base_speed_calc = (manual_max_power * 1000 * 60) / (2 * math.pi * manual_peak_torque)
+            st.caption(f"對應基速 ≈ {base_speed_calc:.0f} rpm")
 
-    if est_mode == '自動估算':
-        cd = get_cd_by_vehicle(vehicle_type)
-        fr = FR
-        required_power, _ = calculate_power_requirements(total_mass, speed_ms, area, cd, fr)
-        max_power_kw = required_power * 2
-        st.info(f"⚡ 所需功率 = {required_power:.2f} kW → 最大功率 = {max_power_kw:.2f} kW")
-        manual_max_power = max_power_kw
-        manual_peak_torque = None
-    else:
-        manual_max_power = st.number_input("最大功率 (kW)", min_value=0.1, value=10.24, step=0.1)
-        manual_peak_torque = st.number_input("最大扭矩 (Nm)", min_value=1.0, value=32.6, step=0.1)
-        base_speed_calc = (manual_max_power * 1000 * 60) / (2 * math.pi * manual_peak_torque)
-        st.caption(f"對應基速 ≈ {base_speed_calc:.0f} rpm")
+        motor_eff = st.number_input("馬達效率 (%)", min_value=0.0, max_value=100.0, value=90.0, step=1.0,
+                                    help="固定工作點下的馬達效率，用於里程估計。")
 
-    # ---------- 電池容量規格 ----------
-    st.markdown("---")
-    st.subheader("🔋 電池容量規格")
-    user_battery_energy_kwh = st.number_input("電池總能量 (kWh)", min_value=0.5, value=5.0, step=0.5,
-                                              help="用於行駛里程估計的電池總能量，請根據實際電池規格輸入。")
+    # ----- 齒輪 (Gear) 區塊 -----
+    with st.expander("🔹 齒輪 (Gear)", expanded=True):
+        gear_option = st.radio("減速比", ['自動估算', '手動輸入'])
+        if gear_option == '手動輸入':
+            gear_ratio = st.number_input("請輸入減速比", min_value=1.0, value=8.7, step=0.5)
+        else:
+            gear_ratio = None
+        gear_eff = st.number_input("齒輪箱效率 (%)", min_value=0.0, max_value=100.0, value=95.0, step=1.0,
+                                   help="齒輪箱傳動效率，用於里程估計。")
+
+    # ----- 電池 (Battery) 區塊 -----
+    with st.expander("🔹 電池 (Battery)", expanded=True):
+        user_battery_energy_kwh = st.number_input("電池總能量 (kWh)", min_value=0.5, value=5.0, step=0.5,
+                                                  help="用於行駛里程估計的電池總能量，請根據實際電池規格輸入。")
+        battery_soc = st.number_input("電池可用 SOC (%)", min_value=0.0, max_value=100.0, value=90.0, step=5.0,
+                                      help="State of Charge，剩餘電量百分比，通常為避免深度放電而保留部分電量。")
 
     # ---------- 里程估計參數 ----------
-    st.subheader("🔋 里程估計參數")
-    motor_eff = st.number_input("馬達效率 (%)", min_value=0.0, max_value=100.0, value=90.0, step=1.0,
-                                help="固定工作點下的馬達效率")
-    gear_eff = st.number_input("齒輪箱效率 (%)", min_value=0.0, max_value=100.0, value=95.0, step=1.0,
-                               help="齒輪箱傳動效率")
-    battery_soc = st.number_input("電池可用 SOC (%)", min_value=0.0, max_value=100.0, value=90.0, step=5.0,
-                                  help="State of Charge，剩餘電量百分比，通常為避免深度放電而保留部分電量")
+    st.header("📊 里程估計參數")
     avg_speed_ratio = st.slider("平均車速 / 最高車速 比例", min_value=0.3, max_value=1.0, value=0.7, step=0.05,
                                 help="估計里程時使用的平均車速佔最高車速的比例")
     avg_speed_kmh = speed_kmh * avg_speed_ratio
@@ -461,11 +466,10 @@ if "default_motor_spec" not in st.session_state:
 st.subheader("📋 規格摘要")
 
 with st.expander("📦 馬達規格", expanded=True):
-    # 使用自訂渲染函數
     html = render_json_with_diff(motor_spec, st.session_state.default_motor_spec)
     st.markdown(html, unsafe_allow_html=True)
 
-# 動態性能表現輸出（合併為一個 expander）
+# 動態性能表現輸出
 with st.expander("🏎️ 動態性能表現", expanded=True):
     st.markdown("**起步性能比較**")
     st.metric("0→最高車速起步所需馬達扭矩", f"{T_motor_start_full:.1f} Nm")
@@ -496,7 +500,6 @@ with st.expander("🏎️ 動態性能表現", expanded=True):
     col_a, col_b = st.columns(2)
     with col_a:
         st.metric("目標 0→50 km/h", f"{accel_time_0to50:.1f} s")
-        # 實際值根據是否滿足目標顯示顏色
         actual_color = "green" if actual_0to50 <= accel_time_0to50 else "red"
         st.markdown(f'<p style="color:{actual_color};">實際 0→50 km/h: {actual_0to50:.1f} s</p>', unsafe_allow_html=True)
         if actual_0to50 <= accel_time_0to50:
