@@ -615,7 +615,6 @@ fig1.add_trace(go.Scatter(x=[n_max_motor], y=[T_at_max_n], mode='markers+text', 
 design_rpm = speed_ms * 60 / (2 * math.pi * wheel_radius_m) * gear_ratio
 fig1.add_vline(x=design_rpm, line_width=2, line_dash="dash", line_color="orange", opacity=0.9)
 T_at_design = np.interp(design_rpm, n, T_motor_max) if design_rpm <= n_max_motor else 0
-# 修改點：將 trace name 改為包含減速比
 fig1.add_trace(go.Scatter(x=[design_rpm], y=[T_at_design], mode='markers+text',
                            name=f'目標最高車速對應馬達轉速(減速比={gear_ratio:.2f})',
                            text=[f'{design_rpm:.0f} rpm, {T_at_design:.1f} Nm'],
@@ -623,7 +622,7 @@ fig1.add_trace(go.Scatter(x=[design_rpm], y=[T_at_design], mode='markers+text',
                            marker=dict(color='orange', size=12),
                            textfont=dict(size=11)), secondary_y=False)
 
-# 交點標記 - 修改名稱
+# 交點標記
 intersections_flat = find_intersection(n, T_motor_max, motor_rpm_flat, torque_flat)
 for i, (x_cross, y_cross) in enumerate(intersections_flat):
     fig1.add_trace(go.Scatter(x=[x_cross], y=[y_cross], mode='markers',
@@ -649,7 +648,7 @@ st.plotly_chart(fig1, use_container_width=True)
 
 st.markdown("---")
 
-# ================== 圖2：車輪扭矩 vs 車速 ==================
+# ================== 圖2：車輪扭矩 vs 車速（已修改交點名稱）==================
 st.markdown("## 📈 圖2：車輪扭矩 vs 車速")
 st.caption("藍色實線為最大車輪扭矩，紅色虛線為平路負載線（車輪側），綠色虛線為爬坡負載線。標記點為設計最高車速、馬達極速對應車速以及負載線與扭矩曲線的交點。")
 
@@ -667,15 +666,23 @@ fig2.add_vline(x=speed_kmh, line_width=2, line_dash="dash", line_color="orange",
 fig2.add_trace(go.Scatter(x=[speed_kmh], y=[T_design_flat], mode='markers+text', name='設計最高車速點', text=[f'{speed_kmh:.0f} km/h, {T_design_flat:.1f} Nm'], textposition='top right', marker=dict(color='orange', size=12), textfont=dict(size=11)))
 fig2.add_trace(go.Scatter(x=[v_max_motor], y=[T_at_vmax], mode='markers+text', name='馬達最高轉速對應車速', text=[f'馬達最高速\n{v_max_motor:.0f} km/h, {T_at_vmax:.1f} Nm'], textposition='top left', marker=dict(color='purple', size=12), textfont=dict(size=11)))
 
-# 平路交點
+# 平路交點 - 修改名稱
 intersections_flat_wheel = find_intersection(v_from_n, T_wheel_max, speed_kmh_flat, T_wheel_flat)
 for i, (x_cross, y_cross) in enumerate(intersections_flat_wheel):
-    fig2.add_trace(go.Scatter(x=[x_cross], y=[y_cross], mode='markers', name=f'平路交點{i+1}' if i==0 else None, marker=dict(color='red', size=14, symbol='x'), showlegend=(i==0)))
+    fig2.add_trace(go.Scatter(x=[x_cross], y=[y_cross], mode='markers',
+                               name='平路負載線交點' if i==0 else None,
+                               marker=dict(color='red', size=14, symbol='x'),
+                               showlegend=(i==0)))
     fig2.add_annotation(x=x_cross, y=y_cross, text=f'{x_cross:.1f} km/h', showarrow=True, arrowhead=2, ax=30, ay=-40, font=dict(size=9))
+
+# 爬坡交點 - 修改名稱
 if T_wheel_climb is not None:
     intersections_climb_wheel = find_intersection(v_from_n, T_wheel_max, speed_kmh_climb, T_wheel_climb)
     for i, (x_cross, y_cross) in enumerate(intersections_climb_wheel):
-        fig2.add_trace(go.Scatter(x=[x_cross], y=[y_cross], mode='markers', name=f'爬坡交點{i+1}' if i==0 else None, marker=dict(color='green', size=14, symbol='x'), showlegend=(i==0)))
+        fig2.add_trace(go.Scatter(x=[x_cross], y=[y_cross], mode='markers',
+                                   name='爬坡負載線交點' if i==0 else None,
+                                   marker=dict(color='green', size=14, symbol='x'),
+                                   showlegend=(i==0)))
         fig2.add_annotation(x=x_cross, y=y_cross, text=f'{x_cross:.1f} km/h', showarrow=True, arrowhead=2, ax=30, ay=40, font=dict(size=9))
 
 x_vals = [speed_kmh * 1.2, v_max_motor * 1.1]
