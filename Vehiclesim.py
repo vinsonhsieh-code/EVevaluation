@@ -116,11 +116,12 @@ def estimate_gearbox(speed_max_ms, wheel_radius_m):
 def calculate_load_curve(mass, area, cd, fr, wheel_radius_m, gear_ratio, speed_max_ms, grade_percent=0, extend_to_vmax=None):
     """
     計算負載線，可指定延伸到的最高車速 (km/h)
+    僅延伸至 extend_to_vmax，不額外乘係數
     """
     if extend_to_vmax is None:
         max_speed = speed_max_ms * 1.1
     else:
-        max_speed = max(speed_max_ms * 1.1, extend_to_vmax * 1.05)  # 延伸至馬達極速的1.05倍
+        max_speed = max(speed_max_ms * 1.1, extend_to_vmax)  # 僅到 v_max_motor，不乘1.05
     speeds = np.linspace(0, max_speed, 150)
     torques = []
     forces = []
@@ -448,14 +449,14 @@ T_wheel_start_50 = F_total_start_50 * wheel_radius_m
 T_motor_start_50 = T_wheel_start_50 / (gear_ratio * ETA_DRIVE)
 
 # ---------- 馬達外特性曲線（車輪側扭矩 vs 車速）----------
-# 先建立轉速陣列，範圍從0到馬達最高轉速的1.1倍
+# 先建立轉速陣列，範圍從0到馬達最高轉速的1.1倍（確保曲線完整）
 n = np.linspace(0, n_max_motor * 1.1, 500)
 T_motor_max = np.zeros_like(n)
 P_motor_out = np.zeros_like(n)
 
 const_idx = n <= base_speed
 T_motor_max[const_idx] = T_peak
-P_motor_out[const_idx] = T_peak * n[const_idx] / 9550
+P_motor_out[const_idx] = T_peak * n[const_idx] / 9550   # 功率 kW
 
 power_idx = (n > base_speed) & (n <= n_max_motor)
 T_motor_max[power_idx] = (max_power_kw_used * 1000) / (2 * math.pi * n[power_idx] / 60)
@@ -473,7 +474,7 @@ T_wheel_max = T_motor_max * gear_ratio * ETA_DRIVE
 # 計算馬達最高轉速對應的車速
 v_max_motor = n_max_motor / gear_ratio * (2 * math.pi * wheel_radius_m) * 3.6 / 60
 
-# ---------- 負載線（平路與爬坡，延伸至馬達極速）----------
+# ---------- 負載線（平路與爬坡，僅延伸至馬達極速）----------
 # 平路負載線
 motor_rpm_flat, torque_flat, speed_kmh_flat, force_flat = calculate_load_curve(
     total_mass, area, cd, fr, wheel_radius_m, gear_ratio, speed_ms, grade_percent=0,
@@ -681,7 +682,10 @@ st.download_button(
 
 st.markdown("---")
 
-# ---------- 圖1：馬達 TN 曲線 + 功率曲線 ----------
+# ================== 圖1：馬達 TN 曲線 + 功率曲線 ==================
+st.markdown("## 📈 圖1：馬達 TN 曲線 + 功率曲線")
+st.caption("藍色實線為馬達最大扭矩，紅色虛線為平路負載線（馬達側），綠色虛線為爬坡負載線，金色實線為馬達功率。標記點為關鍵轉速與交點。")
+
 # 計算最大轉速範圍（用於 x 軸上限）
 max_rpm_load = motor_rpm_flat.max() if len(motor_rpm_flat) > 0 else 0
 if motor_rpm_climb is not None:
@@ -784,7 +788,10 @@ st.plotly_chart(fig1, use_container_width=True)
 
 st.markdown("---")
 
-# ---------- 圖2：車輪扭矩 vs 車速（已延伸負載線）----------
+# ================== 圖2：車輪扭矩 vs 車速 ==================
+st.markdown("## 📈 圖2：車輪扭矩 vs 車速")
+st.caption("藍色實線為最大車輪扭矩，紅色虛線為平路負載線（車輪側），綠色虛線為爬坡負載線。標記點為設計最高車速、馬達極速對應車速以及負載線與扭矩曲線的交點。")
+
 # 設計車速點
 idx_design = np.argmin(np.abs(speed_kmh_flat - speed_kmh))
 T_design_flat = T_wheel_flat[idx_design]
@@ -864,7 +871,10 @@ st.plotly_chart(fig2, use_container_width=True)
 
 st.markdown("---")
 
-# ---------- 圖3：速度與位移 vs 時間 ----------
+# ================== 圖3：速度與位移 vs 時間 ==================
+st.markdown("## 📈 圖3：加速性能（速度與位移 vs 時間）")
+st.caption("藍色實線為車速隨時間變化，紅色虛線為位移隨時間變化。垂直線標註實際達到50 km/h和最高車速的時間，以及目標加速時間。")
+
 fig3 = make_subplots(specs=[[{"secondary_y": True}]])
 fig3.add_trace(
     go.Scatter(x=time_acc, y=speed_acc, mode='lines', name='車速 (km/h)', line=dict(color='blue', width=3)),
