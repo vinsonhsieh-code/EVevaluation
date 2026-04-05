@@ -628,7 +628,7 @@ st.plotly_chart(fig1, use_container_width=True)
 
 st.markdown("---")
 
-# ================== 圖2：車輪扭矩 vs 車速 ==================
+# ================== 圖2：車輪扭矩 vs 車速（手動設定 Y 軸比例）==================
 st.markdown("## 📈 圖2：車輪扭矩 vs 車速")
 st.caption("藍色實線為最大車輪扭矩，紅色虛線為平路負載線（車輪側），綠色虛線為爬坡負載線。標記點為設計最高車速、馬達極速對應車速以及負載線與扭矩曲線的交點。")
 
@@ -664,9 +664,13 @@ if intersections_climb_wheel:
     x_vals.extend([p[0] for p in intersections_climb_wheel])
 x_max = max(x_vals)
 
-fig2.update_layout(legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5), margin=dict(l=20, r=20, t=40, b=20), height=400)
+# 手動設定 Y 軸範圍：取最大車輪扭矩、平路負載線、爬坡負載線的最大值，乘上 1.2 倍
+y_max_val = max(T_wheel_max.max(), T_wheel_flat.max())
+if T_wheel_climb is not None:
+    y_max_val = max(y_max_val, T_wheel_climb.max())
+fig2.update_yaxes(title_text="扭矩 (Nm)", range=[0, y_max_val * 1.2])
 fig2.update_xaxes(title_text="車速 (km/h)", range=[0, x_max])
-fig2.update_yaxes(title_text="扭矩 (Nm)")
+fig2.update_layout(legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5), margin=dict(l=20, r=20, t=40, b=20), height=400)
 st.plotly_chart(fig2, use_container_width=True)
 
 st.markdown("---")
