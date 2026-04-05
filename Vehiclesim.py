@@ -590,7 +590,7 @@ st.markdown("---")
 st.markdown("## 📈 圖1：馬達 TN 曲線 + 功率曲線")
 st.caption("藍色實線為馬達最大扭矩，紅色虛線為平路負載線（馬達側），綠色虛線為爬坡負載線，金色實線為馬達功率。標記點為關鍵轉速與交點。")
 
-x_upper = n_max_motor * 1.1  # 適當延伸，不超過太多
+x_upper = n_max_motor * 1.1
 fig1 = make_subplots(specs=[[{"secondary_y": True}]])
 fig1.add_trace(go.Scatter(x=n, y=T_motor_max, mode='lines', name='馬達最大扭矩', line=dict(color='blue', width=3)), secondary_y=False)
 fig1.add_trace(go.Scatter(x=motor_rpm_flat, y=torque_flat, mode='lines', name='平路負載線 (馬達側扭矩)', line=dict(color='red', width=3, dash='dash')), secondary_y=False)
@@ -624,7 +624,8 @@ fig1.update_yaxes(title_text="扭矩 (Nm)", secondary_y=False, range=[0, T_peak 
 fig1.update_yaxes(title_text="功率 (kW)", secondary_y=True, range=[0, max_power_kw_used * 1.2])
 fig1.update_xaxes(title_text="轉速 (rpm)", range=[0, x_upper])
 fig1.update_layout(legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5), margin=dict(l=20, r=20, t=40, b=20), height=400)
-st.plotly_chart(fig1, use_container_width=True)
+config = {'modeBarButtonsToRemove': ['autoScale2d']}
+st.plotly_chart(fig1, use_container_width=True, config=config)
 
 st.markdown("---")
 
@@ -657,17 +658,15 @@ if T_wheel_climb is not None:
         fig2.add_trace(go.Scatter(x=[x_cross], y=[y_cross], mode='markers', name=f'爬坡交點{i+1}' if i==0 else None, marker=dict(color='green', size=14, symbol='x'), showlegend=(i==0)))
         fig2.add_annotation(x=x_cross, y=y_cross, text=f'{x_cross:.1f} km/h', showarrow=True, arrowhead=2, ax=30, ay=40, font=dict(size=9))
 
-x_vals = [speed_kmh * 1.2, v_max_motor * 1.1]
-if intersections_flat_wheel:
-    x_vals.extend([p[0] for p in intersections_flat_wheel])
-if intersections_climb_wheel:
-    x_vals.extend([p[0] for p in intersections_climb_wheel])
-x_max = max(x_vals)
-
+# 手動設定 Y 軸範圍：根據最大車輪扭矩與負載線的最大值決定上限
+y_max = max(T_wheel_max.max(), T_wheel_flat.max())
+if T_wheel_climb is not None:
+    y_max = max(y_max, T_wheel_climb.max())
+y_upper = y_max * 1.1
+fig2.update_yaxes(title_text="扭矩 (Nm)", range=[0, y_upper])
+fig2.update_xaxes(title_text="車速 (km/h)", range=[0, max(v_max_motor * 1.1, speed_kmh * 1.2)])
 fig2.update_layout(legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5), margin=dict(l=20, r=20, t=40, b=20), height=400)
-fig2.update_xaxes(title_text="車速 (km/h)", range=[0, x_max])
-fig2.update_yaxes(title_text="扭矩 (Nm)")
-st.plotly_chart(fig2, use_container_width=True)
+st.plotly_chart(fig2, use_container_width=True, config=config)
 
 st.markdown("---")
 
@@ -698,7 +697,7 @@ fig3.update_layout(legend=dict(orientation="h", yanchor="bottom", y=1.02, xancho
 fig3.update_xaxes(title_text="時間 (秒)")
 fig3.update_yaxes(title_text="車速 (km/h)", secondary_y=False)
 fig3.update_yaxes(title_text="位移 (m)", secondary_y=True)
-st.plotly_chart(fig3, use_container_width=True)
+st.plotly_chart(fig3, use_container_width=True, config=config)
 
 st.markdown("---")
 st.caption("💡 提示：圖中紫色虛線為目標 0→50 km/h 加速時間，棕色虛線為目標 0→最高車速加速時間。")
