@@ -114,12 +114,7 @@ def estimate_gearbox(speed_max_ms, wheel_radius_m):
     return gear_ratio
 
 def calculate_load_curve(mass, area, cd, fr, wheel_radius_m, gear_ratio, speed_max_ms, grade_percent=0, extend_to_vmax=None):
-    """
-    計算負載線（馬達側扭矩）
-    extend_to_vmax: 馬達最高轉速對應的車速 (km/h)，若提供則負載線計算到該車速為止，不再延伸
-    """
     if extend_to_vmax is not None:
-        # 僅計算到馬達極速，不額外延伸
         max_speed = max(speed_max_ms, extend_to_vmax)
     else:
         max_speed = speed_max_ms * 1.1
@@ -430,8 +425,8 @@ T_motor_start_full = (F_roll_start + F_accel_full) * wheel_radius_m / (gear_rati
 F_accel_50 = total_mass * avg_accel_50
 T_motor_start_50 = (F_roll_start + F_accel_50) * wheel_radius_m / (gear_ratio * ETA_DRIVE)
 
-# 馬達外特性（轉速域 0 到 n_max_motor * 1.05）
-n = np.linspace(0, n_max_motor * 1.05, 500)
+# 馬達外特性（轉速域 0 到 n_max_motor * 1.1）
+n = np.linspace(0, n_max_motor * 1.1, 500)
 T_motor_max = np.zeros_like(n)
 P_motor_out = np.zeros_like(n)
 
@@ -595,7 +590,7 @@ st.markdown("---")
 st.markdown("## 📈 圖1：馬達 TN 曲線 + 功率曲線")
 st.caption("藍色實線為馬達最大扭矩，紅色虛線為平路負載線（馬達側），綠色虛線為爬坡負載線，金色實線為馬達功率。標記點為關鍵轉速與交點。")
 
-x_upper = n_max_motor * 1.05  # 稍微延伸以便觀察曲線末端
+x_upper = n_max_motor * 1.1  # 適當延伸，不超過太多
 fig1 = make_subplots(specs=[[{"secondary_y": True}]])
 fig1.add_trace(go.Scatter(x=n, y=T_motor_max, mode='lines', name='馬達最大扭矩', line=dict(color='blue', width=3)), secondary_y=False)
 fig1.add_trace(go.Scatter(x=motor_rpm_flat, y=torque_flat, mode='lines', name='平路負載線 (馬達側扭矩)', line=dict(color='red', width=3, dash='dash')), secondary_y=False)
@@ -624,10 +619,11 @@ if motor_rpm_climb is not None:
         fig1.add_trace(go.Scatter(x=[x_cross], y=[y_cross], mode='markers', name=f'爬坡交點{i+1}' if i==0 else None, marker=dict(color='green', size=12, symbol='x'), showlegend=(i==0)), secondary_y=False)
         fig1.add_annotation(x=x_cross, y=y_cross, text=f'{x_cross:.0f} rpm, {y_cross:.1f} Nm', showarrow=True, arrowhead=2, ax=30, ay=40, font=dict(size=9))
 
-fig1.update_layout(legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5), margin=dict(l=20, r=20, t=40, b=20), height=400)
+# 手動設定 Y 軸範圍以獲得良好比例
+fig1.update_yaxes(title_text="扭矩 (Nm)", secondary_y=False, range=[0, T_peak * 1.2])
+fig1.update_yaxes(title_text="功率 (kW)", secondary_y=True, range=[0, max_power_kw_used * 1.2])
 fig1.update_xaxes(title_text="轉速 (rpm)", range=[0, x_upper])
-fig1.update_yaxes(title_text="扭矩 (Nm)", secondary_y=False)
-fig1.update_yaxes(title_text="功率 (kW)", secondary_y=True)
+fig1.update_layout(legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5), margin=dict(l=20, r=20, t=40, b=20), height=400)
 st.plotly_chart(fig1, use_container_width=True)
 
 st.markdown("---")
