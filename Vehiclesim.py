@@ -554,7 +554,11 @@ with st.expander("🔋 行駛里程估計", expanded=True):
             st.metric("期望續航里程", f"{desired_range:.1f} km")
             range_met = estimated_range >= desired_range
             st.markdown(f'<p style="color:{"green" if range_met else "red"};">比較結果: 估計里程 {"≥" if range_met else "<"} 期望里程</p>', unsafe_allow_html=True)
-            st.success("✅ 滿足目標") if range_met else st.error("❌ 未達目標")
+            # 修正：使用標準 if-else 區塊，而非條件表達式
+            if range_met:
+                st.success("✅ 滿足目標")
+            else:
+                st.error("❌ 未達目標")
     st.markdown("---")
     st.markdown("**計算公式**")
     st.latex(r"P_{\text{avg}} = \frac{F_{\text{roll}} + F_{\text{air}}}{1000} \cdot v_{\text{avg}}")
