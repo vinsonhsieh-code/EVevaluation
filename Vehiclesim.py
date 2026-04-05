@@ -554,7 +554,6 @@ with st.expander("🔋 行駛里程估計", expanded=True):
             st.metric("期望續航里程", f"{desired_range:.1f} km")
             range_met = estimated_range >= desired_range
             st.markdown(f'<p style="color:{"green" if range_met else "red"};">比較結果: 估計里程 {"≥" if range_met else "<"} 期望里程</p>', unsafe_allow_html=True)
-            # 修正：使用標準 if-else 區塊，而非條件表達式
             if range_met:
                 st.success("✅ 滿足目標")
             else:
@@ -616,17 +615,29 @@ fig1.add_trace(go.Scatter(x=[n_max_motor], y=[T_at_max_n], mode='markers+text', 
 design_rpm = speed_ms * 60 / (2 * math.pi * wheel_radius_m) * gear_ratio
 fig1.add_vline(x=design_rpm, line_width=2, line_dash="dash", line_color="orange", opacity=0.9)
 T_at_design = np.interp(design_rpm, n, T_motor_max) if design_rpm <= n_max_motor else 0
-fig1.add_trace(go.Scatter(x=[design_rpm], y=[T_at_design], mode='markers+text', name='設計車速對應轉速', text=[f'{design_rpm:.0f} rpm, {T_at_design:.1f} Nm'], textposition='top center', marker=dict(color='orange', size=12), textfont=dict(size=11)), secondary_y=False)
+# 修改點：將 trace name 改為包含減速比
+fig1.add_trace(go.Scatter(x=[design_rpm], y=[T_at_design], mode='markers+text',
+                           name=f'目標最高車速對應馬達轉速(減速比={gear_ratio:.2f})',
+                           text=[f'{design_rpm:.0f} rpm, {T_at_design:.1f} Nm'],
+                           textposition='top center',
+                           marker=dict(color='orange', size=12),
+                           textfont=dict(size=11)), secondary_y=False)
 
-# 交點
+# 交點標記 - 修改名稱
 intersections_flat = find_intersection(n, T_motor_max, motor_rpm_flat, torque_flat)
 for i, (x_cross, y_cross) in enumerate(intersections_flat):
-    fig1.add_trace(go.Scatter(x=[x_cross], y=[y_cross], mode='markers', name=f'平路交點{i+1}' if i==0 else None, marker=dict(color='red', size=12, symbol='x'), showlegend=(i==0)), secondary_y=False)
+    fig1.add_trace(go.Scatter(x=[x_cross], y=[y_cross], mode='markers',
+                               name='平路負載線交點' if i==0 else None,
+                               marker=dict(color='red', size=12, symbol='x'),
+                               showlegend=(i==0)), secondary_y=False)
     fig1.add_annotation(x=x_cross, y=y_cross, text=f'{x_cross:.0f} rpm, {y_cross:.1f} Nm', showarrow=True, arrowhead=2, ax=30, ay=-40, font=dict(size=9))
 if motor_rpm_climb is not None:
     intersections_climb = find_intersection(n, T_motor_max, motor_rpm_climb, torque_climb)
     for i, (x_cross, y_cross) in enumerate(intersections_climb):
-        fig1.add_trace(go.Scatter(x=[x_cross], y=[y_cross], mode='markers', name=f'爬坡交點{i+1}' if i==0 else None, marker=dict(color='green', size=12, symbol='x'), showlegend=(i==0)), secondary_y=False)
+        fig1.add_trace(go.Scatter(x=[x_cross], y=[y_cross], mode='markers',
+                                   name='爬坡負載線交點' if i==0 else None,
+                                   marker=dict(color='green', size=12, symbol='x'),
+                                   showlegend=(i==0)), secondary_y=False)
         fig1.add_annotation(x=x_cross, y=y_cross, text=f'{x_cross:.0f} rpm, {y_cross:.1f} Nm', showarrow=True, arrowhead=2, ax=30, ay=40, font=dict(size=9))
 
 # 手動設定 Y 軸範圍以獲得良好比例
