@@ -507,12 +507,18 @@ with st.expander("🏎️ 動態性能表現", expanded=True):
         st.metric("目標 0→50 km/h", f"{accel_time_0to50:.1f} s")
         actual_color = "green" if actual_0to50 <= accel_time_0to50 else "red"
         st.markdown(f'<p style="color:{actual_color};">實際 0→50 km/h: {actual_0to50:.1f} s</p>', unsafe_allow_html=True)
-        st.success("✅ 滿足目標") if actual_0to50 <= accel_time_0to50 else st.error("❌ 未達目標")
+        if actual_0to50 <= accel_time_0to50:
+            st.success("✅ 滿足目標")
+        else:
+            st.error("❌ 未達目標")
     with col_b:
         st.metric("目標 0→最高車速", f"{accel_time_full:.1f} s")
         actual_color_full = "green" if actual_full_time <= accel_time_full else "red"
         st.markdown(f'<p style="color:{actual_color_full};">實際 0→最高車速: {actual_full_time:.1f} s</p>', unsafe_allow_html=True)
-        st.success("✅ 滿足目標") if actual_full_time <= accel_time_full else st.error("❌ 未達目標")
+        if actual_full_time <= accel_time_full:
+            st.success("✅ 滿足目標")
+        else:
+            st.error("❌ 未達目標")
     st.caption("📌 說明：目標值為設計要求，實際值根據馬達真實性能模擬。若實際值 > 目標值，表示馬達性能不足。")
 
 with st.expander("🔋 電池 (估算規格)", expanded=False):
@@ -590,7 +596,7 @@ st.markdown("---")
 st.markdown("## 📈 圖1：馬達 TN 曲線 + 功率曲線")
 st.caption("藍色實線為馬達最大扭矩，紅色虛線為平路負載線（馬達側），綠色虛線為爬坡負載線，金色實線為馬達功率。標記點為關鍵轉速與交點。")
 
-x_upper = n_max_motor * 1.1  # 適當延伸，不超過太多
+x_upper = n_max_motor * 1.1
 fig1 = make_subplots(specs=[[{"secondary_y": True}]])
 fig1.add_trace(go.Scatter(x=n, y=T_motor_max, mode='lines', name='馬達最大扭矩', line=dict(color='blue', width=3)), secondary_y=False)
 fig1.add_trace(go.Scatter(x=motor_rpm_flat, y=torque_flat, mode='lines', name='平路負載線 (馬達側扭矩)', line=dict(color='red', width=3, dash='dash')), secondary_y=False)
@@ -628,7 +634,7 @@ st.plotly_chart(fig1, use_container_width=True)
 
 st.markdown("---")
 
-# ================== 圖2：車輪扭矩 vs 車速（手動設定 Y 軸比例）==================
+# ================== 圖2：車輪扭矩 vs 車速 ==================
 st.markdown("## 📈 圖2：車輪扭矩 vs 車速")
 st.caption("藍色實線為最大車輪扭矩，紅色虛線為平路負載線（車輪側），綠色虛線為爬坡負載線。標記點為設計最高車速、馬達極速對應車速以及負載線與扭矩曲線的交點。")
 
