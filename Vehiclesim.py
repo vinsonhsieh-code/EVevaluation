@@ -670,28 +670,57 @@ st.markdown("---")
 
 # ================== 圖1：馬達 TN 曲線 + 功率曲線 + WLTC 工作點（含負扭矩）==================
 st.markdown("## 📈 圖1：馬達 TN 曲線 + 功率曲線 + WLTC 工作點")
-st.caption("藍色實線為馬達最大扭矩，紅色虛線為平路負載線（馬達側），綠色虛線為爬坡負載線，金色實線為馬達功率。青色散點為 WLTC 工況下的馬達需求工作點（轉速 vs 扭矩），包含負扭矩（再生煞車）。")
+st.caption("淡藍色實線為馬達最大扭矩，紅色虛線為平路負載線（馬達側），綠色虛線為爬坡負載線，金色實線為馬達功率。青色散點為 WLTC 工況下的馬達需求工作點（轉速 vs 扭矩），包含負扭矩（再生煞車）。")
 
 x_upper = n_max_motor * 1.1
 
-# 扭矩軸動態範圍（包含負值）
-y_min = min(0, T_motor_max.min(), torque_flat.min())
-y_max = max(T_peak * 1.2, T_motor_max.max(), torque_flat.max())
+# 【重點修正1】精確計算網格間距 (只留上方一格)
+# 將 T_peak 分為 4 格，讓 T_peak 永遠踩在網格線上
+grid_step = T_peak / 4.0
+
+# 決定 Y 軸下限 (根據負值往下取整數格)
+y_min_raw = min(0, T_motor_max.min(), torque_flat.min())
 if "df_motor_operating_points" in st.session_state:
-    df_op = st.session_state.df_motor_operating_points
-    y_min = min(y_min, df_op['motor_torque_Nm'].min())
-    y_max = max(y_max, df_op['motor_torque_Nm'].max())
-y_range = [y_min, y_max * 1.05]
+    y_min_raw = min(y_min_raw, st.session_state.df_motor_operating_points['motor_torque_Nm'].min())
+y_min_torque = math.floor(y_min_raw / grid_step) * grid_step
+
+# 決定 Y 軸上限：剛好是 T_peak 再往上加 1 格
+y_max_torque = T_peak + grid_step
+if "df_motor_operating_points" in st.session_state:
+    max_op = st.session_state.df_motor_operating_points['motor_torque_Nm'].max()
+    if max_op > y_max_torque:
+        y_max_torque = math.ceil(max_op / grid_step) * grid_step
+
+# 算出完美的功率對齊比例
+ratio = max_power_kw_used / T_peak if T_peak > 0 else 1
+p_min = y_min_torque * ratio
+p_max = y_max_torque * ratio
+
+# 準備刻度陣列
+import numpy as np
+num_ticks = int(round((y_max_torque - y_min_torque) / grid_step)) + 1
+all_y_ticks = [y_min_torque + i * grid_step for i in range(num_ticks)]
+
+# 剔除會與彩色數字重疊的基礎白色刻度
+clean_y_ticks = [v for v in all_y_ticks if abs(v - T_peak) > 0.01]
+y_ticks = [round(v, 2) for v in clean_y_ticks]
+p_ticks = [round(v * ratio, 2) for v in y_ticks]
+
+x_ticks = list(np.linspace(0, x_upper, 6))
+x_ticks.extend([base_speed, n_max_motor])
+x_ticks = sorted(list(set([round(v, -1) for v in x_ticks])))
 
 fig1 = make_subplots(specs=[[{"secondary_y": True}]])
-fig1.add_trace(go.Scatter(x=n, y=T_motor_max, mode='lines', name='馬達最大扭矩', line=dict(color='blue', width=3)), secondary_y=False)
-fig1.add_trace(go.Scatter(x=motor_rpm_flat, y=torque_flat, mode='lines', name='平路負載線 (馬達側扭矩)', line=dict(color='red', width=3, dash='dash')), secondary_y=False)
+
+# 【重點修正2】將所有原本的 'blue' 改為更柔和明亮的 'dodgerblue'
+fig1.add_trace(go.Scatter(x=n, y=T_motor_max, mode='lines', name='馬達最大扭矩', line=dict(color='dodgerblue', width=3)), secondary_y=False)
+fig1.add_trace(go.Scatter(x=motor_rpm_flat, y=torque_flat, mode='lines', name='平路負載線 (馬達側)', line=dict(color='red', width=3, dash='dash')), secondary_y=False)
 if motor_rpm_climb is not None:
     fig1.add_trace(go.Scatter(x=motor_rpm_climb, y=torque_climb, mode='lines', name=f'爬坡負載線 ({grade_percent}%)', line=dict(color='green', width=3, dash='dot')), secondary_y=False)
 fig1.add_trace(go.Scatter(x=n, y=P_motor_out, mode='lines', name='馬達功率', line=dict(color='gold', width=2, dash='solid')), secondary_y=True)
 
-# 標註關鍵點
-fig1.add_trace(go.Scatter(x=[0], y=[T_peak], mode='markers+text', name='最大扭矩點', text=[f'{T_peak:.1f} Nm'], textposition='bottom right', marker=dict(color='blue', size=12), textfont=dict(size=11)), secondary_y=False)
+# 標註關鍵點 (圓點顏色也同步改為 dodgerblue)
+fig1.add_trace(go.Scatter(x=[0], y=[T_peak], mode='markers+text', name='最大扭矩點', text=[f'{T_peak:.1f} Nm'], textposition='bottom right', marker=dict(color='dodgerblue', size=12), textfont=dict(size=11, color='dodgerblue')), secondary_y=False)
 fig1.add_trace(go.Scatter(x=[base_speed], y=[T_peak], mode='markers+text', name='基速點', text=[f'基速: {base_speed:.0f} rpm'], textposition='top left', marker=dict(color='green', size=12), textfont=dict(size=11)), secondary_y=False)
 T_at_max_n = (max_power_kw_used * 1000) / (2 * math.pi * n_max_motor / 60) if n_max_motor > 0 else 0
 fig1.add_trace(go.Scatter(x=[n_max_motor], y=[T_at_max_n], mode='markers+text', name='最高轉速點', text=[f'{n_max_motor:.0f} rpm, {T_at_max_n:.1f} Nm'], textposition='top right', marker=dict(color='purple', size=12), textfont=dict(size=11)), secondary_y=False)
@@ -699,30 +728,28 @@ design_rpm = speed_ms * 60 / (2 * math.pi * wheel_radius_m) * gear_ratio
 fig1.add_vline(x=design_rpm, line_width=2, line_dash="dash", line_color="orange", opacity=0.9)
 T_at_design = np.interp(design_rpm, n, T_motor_max) if design_rpm <= n_max_motor else 0
 fig1.add_trace(go.Scatter(x=[design_rpm], y=[T_at_design], mode='markers+text',
-                           name=f'目標最高車速對應馬達轉速(減速比={gear_ratio:.2f})',
-                           text=[f'{design_rpm:.0f} rpm, {T_at_design:.1f} Nm'],
+                           name=f'目標車速轉速',
+                           text=[f'{design_rpm:.0f} rpm'],
                            textposition='top center',
                            marker=dict(color='orange', size=12),
                            textfont=dict(size=11)), secondary_y=False)
 
-# 交點標記
+# 交點標記 (維持不變)
 intersections_flat = find_intersection(n, T_motor_max, motor_rpm_flat, torque_flat)
 for i, (x_cross, y_cross) in enumerate(intersections_flat):
     fig1.add_trace(go.Scatter(x=[x_cross], y=[y_cross], mode='markers',
-                               name='平路負載線交點' if i==0 else None,
+                               name='平路交點' if i==0 else None,
                                marker=dict(color='red', size=12, symbol='x'),
                                showlegend=(i==0)), secondary_y=False)
-    fig1.add_annotation(x=x_cross, y=y_cross, text=f'{x_cross:.0f} rpm, {y_cross:.1f} Nm', showarrow=True, arrowhead=2, ax=30, ay=-40, font=dict(size=9))
 if motor_rpm_climb is not None:
     intersections_climb = find_intersection(n, T_motor_max, motor_rpm_climb, torque_climb)
     for i, (x_cross, y_cross) in enumerate(intersections_climb):
         fig1.add_trace(go.Scatter(x=[x_cross], y=[y_cross], mode='markers',
-                                   name='爬坡負載線交點' if i==0 else None,
+                                   name='爬坡交點' if i==0 else None,
                                    marker=dict(color='green', size=12, symbol='x'),
                                    showlegend=(i==0)), secondary_y=False)
-        fig1.add_annotation(x=x_cross, y=y_cross, text=f'{x_cross:.0f} rpm, {y_cross:.1f} Nm', showarrow=True, arrowhead=2, ax=30, ay=40, font=dict(size=9))
 
-# WLTC 工作點（青色）
+# WLTC 工作點
 if "df_motor_operating_points" in st.session_state:
     df_op = st.session_state.df_motor_operating_points
     fig1.add_trace(go.Scatter(
@@ -731,55 +758,7 @@ if "df_motor_operating_points" in st.session_state:
         name='WLTC 需求工作點 (馬達側)', showlegend=True
     ), secondary_y=False)
 
-# 恢復功率軸固定範圍，扭矩軸動態
-# ================= 修正雙 Y 軸：零位線對齊 + 峰值等比例縮放 =================
-y_min_torque = y_range[0]
-y_max_torque = y_range[1]
-
-# 1. 設定功率軸的上限 (p_max)
-# 利用「最大功率」與「最大扭矩」的比例來決定副 Y 軸的縮放。
-# 這裡除以 0.85 是為了讓功率曲線(金線)的最高點，剛好落在扭矩曲線(藍線)最高點的 85% 視覺高度。
-if T_peak > 0:
-    p_max = y_max_torque * (max_power_kw_used / (T_peak * 0.85))
-else:
-    p_max = max_power_kw_used * 1.2
-
-# 2. 設定功率軸的下限 (p_min)
-# 利用完美的相似三角形等比例縮放法，讓兩側的 0 點絕對切齊
-if y_max_torque > 0:
-    p_min = y_min_torque * (p_max / y_max_torque)
-else:
-    p_min = 0
-
-# 3. 更新軸線設定
-# ================= 進階修正：雙 Y 軸比例對齊 & 特定刻度上色 =================
-y_min_torque = y_range[0]
-y_max_torque = y_range[1]
-
-# 1. 算出功率與扭矩的「完美對齊比例」
-ratio = max_power_kw_used / T_peak if T_peak > 0 else 1
-
-p_min = y_min_torque * ratio
-p_max = y_max_torque * ratio
-
-# 2. 準備 X, Y, Y2 軸的基礎刻度 (排除我們想要特別上色的點)
-import numpy as np
-
-# 產生基礎刻度，並刻意避開 T_peak 與 0
-base_y_ticks = list(np.linspace(y_min_torque, y_max_torque, 6))
-clean_y_ticks = [v for v in base_y_ticks if abs(v - T_peak) > 0.5 and abs(v) > 0.5]
-clean_y_ticks.append(0) # 確保 0 存在且為白色
-y_ticks = sorted(list(set([round(v, 1) for v in clean_y_ticks])))
-
-# 產生基礎 Y2 (功率) 刻度
-p_ticks = [round(v * ratio, 2) for v in y_ticks]
-
-# 產生基礎 X (轉速) 刻度
-x_ticks = list(np.linspace(0, x_upper, 6))
-x_ticks.extend([base_speed, n_max_motor])
-x_ticks = sorted(list(set([round(v, -1) for v in x_ticks])))
-
-# 3. 更新圖表設定 (基礎刻度維持白色)
+# 設定 Y 軸與 X 軸
 fig1.update_yaxes(title_text="扭矩 (Nm)", secondary_y=False, 
                   range=[y_min_torque, y_max_torque], 
                   tickvals=y_ticks, tickfont=dict(color='white'),
@@ -794,34 +773,30 @@ fig1.update_xaxes(title_text="轉速 (rpm)", range=[0, x_upper],
                   tickvals=x_ticks, tickfont=dict(color='white'),
                   zeroline=True, zerolinecolor='gray', zerolinewidth=1.5)
 
-# 4. 加入彩色刻度註解 (Annotations)
-# 將特定數值貼在圖表邊緣外側 (xref="paper", yref="y")
-
-# (A) 扭力主軸 (左側) 的藍色最大扭力值
+# 加入彩色刻度註解 (Axis ticks)
 fig1.add_annotation(
     x=0, y=T_peak, xref="paper", yref="y",
-    text=f"<b>{T_peak:.1f}</b>", # 粗體標示
+    text=f"<b>{T_peak:.1f}</b>",
     showarrow=False,
-    xanchor="right", xshift=-5, # 靠左對齊並往左微調
-    font=dict(color="blue", size=13)
+    xanchor="right", xshift=-5,
+    font=dict(color="dodgerblue", size=13)
 )
 
-# (B) 功率副軸 (右側) 的金色最大功率值
 fig1.add_annotation(
     x=1, y=max_power_kw_used, xref="paper", yref="y2",
-    text=f"<b>{max_power_kw_used:.2f}</b>", # 粗體標示
+    text=f"<b>{max_power_kw_used:.2f}</b>",
     showarrow=False,
-    xanchor="left", xshift=5, # 靠右對齊並往右微調
+    xanchor="left", xshift=5,
     font=dict(color="gold", size=13)
 )
 
-# 如果圖表左側或右側的數字被裁切掉，可以微調 layout 的 margin
-fig1.update_layout(margin=dict(l=60, r=60, t=40, b=20))
-
-fig1.update_layout(legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5), margin=dict(l=20, r=20, t=40, b=20), height=500)
+# 【重點修正3】減少 top margin (t=20)，讓圖表更緊湊
+fig1.update_layout(legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5), 
+                   margin=dict(l=60, r=60, t=20, b=20), height=500)
 st.plotly_chart(fig1, use_container_width=True)
 
 st.markdown("---")
+
 
 # ================== 圖2：車輪扭矩 vs 車速 + WLTC 工作點（含負扭矩）==================
 st.markdown("## 📈 圖2：車輪扭矩 vs 車速 + WLTC 工作點")
