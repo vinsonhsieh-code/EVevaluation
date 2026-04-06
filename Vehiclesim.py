@@ -6,6 +6,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from io import BytesIO
 import json
+from scipy.interpolate import griddata
 
 # ================== 常數與預設參數 ==================
 G = 9.81
@@ -193,6 +194,111 @@ def simulate_acceleration(mass, area, cd, fr, wheel_radius_m, gear_ratio, motor_
 
     return np.array(time_list), np.array(speed_list), np.array(disp_list)
 
+# ================== 效率地圖插值函數 ==================
+def build_efficiency_interpolator(df_eff):
+    """從效率地圖 CSV 建立插值函數 (轉速, 扭矩) -> 效率 (%)"""
+    # 假設 CSV 有欄位: 'rpm', 'torque', 'efficiency'
+    rpm = df_eff['rpm'].values
+    torque = df_eff['torque'].values
+    eff = df_eff['efficiency'].values
+    # 建立網格數據供 griddata 使用
+    points = np.vstack((rpm, torque)).T
+    # 定義插值函數 (線性)
+    def interp_func(rpm_query, torque_query):
+        # 將單點或陣列轉為二維
+        if np.isscalar(rpm_query):
+            rpm_query = np.array([rpm_query])
+            torque_query = np.array([torque_query])
+        else:
+            rpm_query = np.asarray(rpm_query)
+            torque_query = np.asarray(torque_query)
+        query_points = np.vstack((rpm_query, torque_query)).T
+        # 使用線性插值，超出範圍時使用最近點
+        eff_interp = griddata(points, eff, query_points, method='linear', fill_value=np.nan)
+        # 對 NaN 使用最近鄰插值補充
+        nan_mask = np.isnan(eff_interp)
+        if np.any(nan_mask):
+            eff_nearest = griddata(points, eff, query_points, method='nearest')
+            eff_interp[nan_mask] = eff_nearest[nan_mask]
+        return eff_interp
+    return interp_func
+
+# ================== 反向動力學里程估計 ==================
+def compute_energy_consumption(df_wltc, mass, area, cd, fr, wheel_radius_m, gear_ratio, gear_eff, interp_eff, regen_limit=0.7):
+    """
+    根據 WLTC 數據和效率地圖計算總能耗。
+    df_wltc: 必須包含 'time', 'speed_kmh', 'accel_ms2' 欄位
+    gear_eff: 齒輪箱效率 (小數)
+    interp_eff: 效率插值函數，輸入 rpm, torque(Nm)，輸出效率 (%)
+    regen_limit: 動能回收效率限制 (預設 0.7)
+    返回: 總能耗 (kWh), 行駛距離 (km), 每秒數據 (DataFrame)
+    """
+    times = df_wltc['time'].values
+    speeds_kmh = df_wltc['speed_kmh'].values
+    accels = df_wltc['accel_ms2'].values
+    dt = np.diff(times, prepend=times[0])  # 時間步長
+    # 預先計算
+    n = len(times)
+    F_roll_const = mass * G * fr
+    factor_aero = 0.5 * RHO * cd * area
+    # 輪胎半徑轉換
+    wheel_circ = 2 * math.pi * wheel_radius_m
+    # 結果陣列
+    motor_rpm = np.zeros(n)
+    motor_torque = np.zeros(n)
+    motor_power_mech = np.zeros(n)
+    system_eff = np.zeros(n)
+    battery_power = np.zeros(n)
+    distance = np.zeros(n)
+    # 距離累計
+    for i in range(n):
+        v_ms = speeds_kmh[i] / 3.6
+        # 行駛距離
+        if i == 0:
+            distance[i] = 0
+        else:
+            distance[i] = distance[i-1] + v_ms * dt[i]
+        # 需求牽引力
+        F_roll = F_roll_const
+        F_air = factor_aero * v_ms**2
+        F_accel = mass * accels[i]
+        F_tractive = F_roll + F_air + F_accel
+        # 馬達轉速 (rpm)
+        motor_rpm[i] = v_ms / wheel_circ * 60 * gear_ratio
+        # 馬達扭矩 (Nm)
+        if F_tractive >= 0:
+            motor_torque[i] = F_tractive * wheel_radius_m / (gear_ratio * gear_eff)
+        else:
+            # 再生煞車: 扭矩為負，效率反向
+            motor_torque[i] = F_tractive * wheel_radius_m / (gear_ratio * gear_eff)
+        # 機械功率 (kW)
+        motor_power_mech[i] = motor_torque[i] * motor_rpm[i] / 9550
+        # 查效率地圖
+        eff_percent = interp_eff(motor_rpm[i], motor_torque[i])[0]
+        eff = eff_percent / 100.0
+        system_eff[i] = eff
+        # 電池功率
+        if motor_power_mech[i] >= 0:
+            battery_power[i] = motor_power_mech[i] / eff if eff > 0 else 0
+        else:
+            # 回收時，電池充電功率 = 機械功率 * 效率 * 回收限制
+            battery_power[i] = motor_power_mech[i] * eff * regen_limit
+    # 總能耗 (kWh) = 積分電池功率 (kW) * dt (小時)
+    total_energy_kwh = np.sum(battery_power * dt / 3600)
+    total_distance_km = distance[-1] / 1000
+    # 整理數據
+    result_df = pd.DataFrame({
+        'time': times,
+        'speed_kmh': speeds_kmh,
+        'accel_ms2': accels,
+        'motor_rpm': motor_rpm,
+        'motor_torque_Nm': motor_torque,
+        'motor_power_kW': motor_power_mech,
+        'system_eff_pct': system_eff * 100,
+        'battery_power_kW': battery_power
+    })
+    return total_energy_kwh, total_distance_km, result_df
+
 # ================== 自訂 JSON 渲染（淺藍色高光）==================
 LIGHT_BLUE = "#87CEEB"
 
@@ -356,28 +462,52 @@ with st.sidebar:
     avg_speed_kmh = speed_kmh * avg_speed_ratio
     st.caption(f"計算平均車速: {avg_speed_kmh:.1f} km/h")
 
-    # ---------- 新增：行駛工況設定 (WLTP CSV 讀取) ----------
-    st.header("📁 行駛工況設定")
-    st.markdown("上傳 CSV 檔案（例如 WLTP 工況），需包含時間(秒)與車速(km/h)欄位。")
-    uploaded_file = st.file_uploader("選擇 CSV 檔案", type=["csv"], help="CSV 檔案應包含時間(s)和車速(km/h)欄位")
-    if uploaded_file is not None:
+    # ---------- 新增：行駛工況與效率地圖設定 ----------
+    st.header("📁 行駛工況與效率地圖")
+    st.markdown("上傳 **WLTC 行駛工況 CSV**（需含時間(s)、車速(km/h)、加速度(m/s²)）")
+    wltc_file = st.file_uploader("選擇 WLTC CSV 檔案", type=["csv"], key="wltc")
+    if wltc_file is not None:
         try:
-            df_cycle = pd.read_csv(uploaded_file)
-            st.success(f"成功讀取檔案，共 {len(df_cycle)} 筆資料")
-            # 讓使用者選擇欄位名稱（或自動檢測）
-            time_col = st.selectbox("時間欄位 (秒)", df_cycle.columns, index=df_cycle.columns.get_loc("time") if "time" in df_cycle.columns else 0)
-            speed_col = st.selectbox("車速欄位 (km/h)", df_cycle.columns, index=df_cycle.columns.get_loc("speed") if "speed" in df_cycle.columns else 0)
-            # 儲存到 session_state 供後續繪圖使用
-            st.session_state.df_cycle = df_cycle
-            st.session_state.time_col = time_col
-            st.session_state.speed_col = speed_col
+            df_wltc = pd.read_csv(wltc_file)
+            st.success(f"成功讀取 WLTC 工況，共 {len(df_wltc)} 筆資料")
+            # 讓使用者選擇欄位
+            time_col = st.selectbox("時間欄位 (秒)", df_wltc.columns, key="wltc_time")
+            speed_col = st.selectbox("車速欄位 (km/h)", df_wltc.columns, key="wltc_speed")
+            accel_col = st.selectbox("加速度欄位 (m/s²)", df_wltc.columns, key="wltc_accel")
+            # 儲存到 session_state
+            st.session_state.df_wltc = df_wltc
+            st.session_state.wltc_time_col = time_col
+            st.session_state.wltc_speed_col = speed_col
+            st.session_state.wltc_accel_col = accel_col
         except Exception as e:
-            st.error(f"讀取檔案失敗: {e}")
-            if "df_cycle" in st.session_state:
-                del st.session_state.df_cycle
+            st.error(f"讀取 WLTC 檔案失敗: {e}")
+            if "df_wltc" in st.session_state:
+                del st.session_state.df_wltc
     else:
-        if "df_cycle" in st.session_state:
-            del st.session_state.df_cycle
+        if "df_wltc" in st.session_state:
+            del st.session_state.df_wltc
+
+    st.markdown("上傳 **效率地圖 CSV**（需含轉速(rpm)、扭矩(Nm)、效率(%)）")
+    eff_file = st.file_uploader("選擇效率地圖 CSV 檔案", type=["csv"], key="effmap")
+    if eff_file is not None:
+        try:
+            df_eff = pd.read_csv(eff_file)
+            st.success(f"成功讀取效率地圖，共 {len(df_eff)} 筆資料")
+            # 假設欄位名稱為 rpm, torque, efficiency
+            # 讓使用者確認欄位
+            rpm_col = st.selectbox("轉速欄位 (rpm)", df_eff.columns, key="eff_rpm")
+            torque_col = st.selectbox("扭矩欄位 (Nm)", df_eff.columns, key="eff_torque")
+            eff_col = st.selectbox("效率欄位 (%)", df_eff.columns, key="eff_val")
+            # 重命名以方便後續處理
+            df_eff = df_eff.rename(columns={rpm_col: 'rpm', torque_col: 'torque', eff_col: 'efficiency'})
+            st.session_state.df_eff = df_eff
+        except Exception as e:
+            st.error(f"讀取效率地圖失敗: {e}")
+            if "df_eff" in st.session_state:
+                del st.session_state.df_eff
+    else:
+        if "df_eff" in st.session_state:
+            del st.session_state.df_eff
 
     cd_preview = get_cd_by_vehicle(vehicle_type)
     fr_preview = FR
@@ -493,7 +623,7 @@ time_acc, speed_acc, disp_acc = simulate_acceleration(
 actual_0to50 = time_acc[np.argmax(speed_acc >= 50)] if np.any(speed_acc >= 50) else np.inf
 actual_full_time = time_acc[np.argmax(speed_acc >= speed_kmh * 0.99)] if np.any(speed_acc >= speed_kmh * 0.99) else np.inf
 
-# 里程估計
+# 里程估計（簡易版）
 avg_speed_ms_est = avg_speed_kmh / 3.6
 F_roll_avg = total_mass * G * fr
 F_air_avg = 0.5 * RHO * cd * area * avg_speed_ms_est**2
@@ -508,6 +638,39 @@ if "default_motor_spec" not in st.session_state:
     st.session_state.default_motor_spec = motor_spec.copy()
 if "default_battery_spec" not in st.session_state:
     st.session_state.default_battery_spec = battery_spec.copy()
+
+# ================== 反向動力學里程估計（若上傳了 WLTC 和效率地圖）==================
+if "df_wltc" in st.session_state and "df_eff" in st.session_state:
+    # 準備 WLTC 數據
+    df_wltc = st.session_state.df_wltc
+    time_col = st.session_state.wltc_time_col
+    speed_col = st.session_state.wltc_speed_col
+    accel_col = st.session_state.wltc_accel_col
+    df_wltc_clean = df_wltc[[time_col, speed_col, accel_col]].copy()
+    df_wltc_clean.columns = ['time', 'speed_kmh', 'accel_ms2']
+    # 確保單位正確（加速度可能為 m/s²）
+    # 建立效率插值器
+    df_eff = st.session_state.df_eff
+    interp_eff = build_efficiency_interpolator(df_eff)
+    # 計算能耗
+    total_energy_kwh, total_distance_km, df_energy = compute_energy_consumption(
+        df_wltc_clean, total_mass, area, cd, fr, wheel_radius_m, gear_ratio,
+        gear_eff/100, interp_eff, regen_limit=0.7
+    )
+    # 預估可行駛里程（使用電池可用能量）
+    usable_energy_kwh = user_battery_energy_kwh * (battery_soc / 100)
+    wltc_range_km = usable_energy_kwh / (total_energy_kwh / total_distance_km) if total_energy_kwh > 0 else 0
+    # 將結果存入 session_state 供後續顯示
+    st.session_state.wltc_total_energy = total_energy_kwh
+    st.session_state.wltc_distance = total_distance_km
+    st.session_state.wltc_range = wltc_range_km
+    st.session_state.df_energy = df_energy
+else:
+    if "wltc_total_energy" in st.session_state:
+        del st.session_state.wltc_total_energy
+        del st.session_state.wltc_distance
+        del st.session_state.wltc_range
+        del st.session_state.df_energy
 
 # ================== 顯示區 ==================
 st.subheader("📋 規格摘要")
@@ -566,7 +729,8 @@ with st.expander("🔧 設計最高車速點性能", expanded=False):
     st.metric("最高車速點輪上扭矩", f"{T_design_flat_local:.1f} Nm")
     st.metric("最高車速點輪上推力", f"{F_design_flat_local:.1f} N")
 
-with st.expander("🔋 行駛里程估計", expanded=True):
+# ---------- 傳統簡易里程估計 ----------
+with st.expander("🔋 行駛里程估計 (簡易法)", expanded=True):
     st.markdown("**估計結果**")
     col1, col2 = st.columns(2)
     with col1:
@@ -601,6 +765,26 @@ with st.expander("🔋 行駛里程估計", expanded=True):
     - **可行駛時間** \(t_{{\text{{drive}}}}\) = {driving_hours:.1f} h
     - **估計里程** = {estimated_range:.1f} km
     """)
+
+# ---------- WLTC 反向動力學里程估計結果 ----------
+if "wltc_total_energy" in st.session_state:
+    with st.expander("🔋 行駛里程估計 (WLTC + 效率地圖)", expanded=True):
+        st.markdown("**基於 WLTC 行駛工況與效率地圖的能耗分析**")
+        col1, col2 = st.columns(2)
+        with col1:
+            st.metric("WLTC 行駛距離", f"{st.session_state.wltc_distance:.2f} km")
+            st.metric("總能耗", f"{st.session_state.wltc_total_energy:.2f} kWh")
+            st.metric("每百公里能耗", f"{st.session_state.wltc_total_energy / st.session_state.wltc_distance * 100:.2f} kWh/100km")
+        with col2:
+            st.metric("預估可行駛里程", f"{st.session_state.wltc_range:.1f} km")
+            # 與期望續航比較（若有）
+            if use_range and desired_range is not None:
+                if st.session_state.wltc_range >= desired_range:
+                    st.success("✅ 滿足目標續航")
+                else:
+                    st.error("❌ 未達目標續航")
+        st.markdown("---")
+        st.markdown("**說明**：此結果基於上傳的 WLTC 工況與效率地圖進行反向動力學計算，較簡易法更精確。")
 
 # 下載 Excel
 df_motor = pd.DataFrame([motor_spec])
@@ -755,20 +939,60 @@ st.plotly_chart(fig3, use_container_width=True)
 
 st.markdown("---")
 
-# ================== 圖4：行駛工況曲線（若已上傳 CSV）==================
-if "df_cycle" in st.session_state:
-    st.markdown("## 📈 圖4：行駛工況曲線")
-    st.caption("上傳的行駛工況（車速 vs 時間）")
-    df_cycle = st.session_state.df_cycle
-    time_col = st.session_state.time_col
-    speed_col = st.session_state.speed_col
+# ================== 圖4：WLTC 行駛工況曲線 ==================
+if "df_wltc" in st.session_state:
+    st.markdown("## 📈 圖4：WLTC 行駛工況")
+    st.caption("上傳的 WLTC 工況（車速 vs 時間）")
+    df_wltc_plot = st.session_state.df_wltc
+    time_col = st.session_state.wltc_time_col
+    speed_col = st.session_state.wltc_speed_col
     fig4 = go.Figure()
-    fig4.add_trace(go.Scatter(x=df_cycle[time_col], y=df_cycle[speed_col],
+    fig4.add_trace(go.Scatter(x=df_wltc_plot[time_col], y=df_wltc_plot[speed_col],
                               mode='lines', name='車速', line=dict(color='blue', width=2)))
     fig4.update_xaxes(title_text="時間 (秒)")
     fig4.update_yaxes(title_text="車速 (km/h)")
     fig4.update_layout(height=400, margin=dict(l=20, r=20, t=40, b=20))
     st.plotly_chart(fig4, use_container_width=True)
-else:
     st.markdown("---")
-    st.caption("💡 提示：圖中紫色虛線為目標 0→50 km/h 加速時間，棕色虛線為目標 0→最高車速加速時間。")
+
+# ================== 圖5：馬達操作點與效率地圖 ==================
+if "df_energy" in st.session_state:
+    st.markdown("## 📈 圖5：馬達操作點與效率地圖")
+    st.caption("散點為 WLTC 工況下的馬達操作點 (扭矩 vs 轉速)，背景為效率地圖等高線。")
+    df_energy = st.session_state.df_energy
+    # 準備效率地圖的網格數據
+    df_eff = st.session_state.df_eff
+    # 建立等高線圖
+    # 為了繪圖效率，可將效率數據網格化
+    rpm_vals = df_eff['rpm'].values
+    torque_vals = df_eff['torque'].values
+    eff_vals = df_eff['efficiency'].values
+    # 建立規則網格
+    rpm_grid = np.linspace(rpm_vals.min(), rpm_vals.max(), 100)
+    torque_grid = np.linspace(torque_vals.min(), torque_vals.max(), 100)
+    Rpm_grid, Torque_grid = np.meshgrid(rpm_grid, torque_grid)
+    # 插值效率
+    points = np.vstack((rpm_vals, torque_vals)).T
+    Eff_grid = griddata(points, eff_vals, (Rpm_grid, Torque_grid), method='cubic')
+    # 繪製等高線
+    fig5 = go.Figure()
+    fig5.add_trace(go.Contour(
+        x=rpm_grid, y=torque_grid, z=Eff_grid,
+        colorscale='Viridis', opacity=0.6,
+        contours=dict(coloring='heatmap'),
+        colorbar=dict(title="效率 (%)"),
+        name="效率地圖"
+    ))
+    # 散點
+    fig5.add_trace(go.Scatter(
+        x=df_energy['motor_rpm'], y=df_energy['motor_torque_Nm'],
+        mode='markers', marker=dict(size=3, color='red', opacity=0.5),
+        name='WLTC 操作點'
+    ))
+    fig5.update_xaxes(title_text="馬達轉速 (rpm)")
+    fig5.update_yaxes(title_text="馬達扭矩 (Nm)")
+    fig5.update_layout(height=500, margin=dict(l=20, r=20, t=40, b=20))
+    st.plotly_chart(fig5, use_container_width=True)
+
+st.markdown("---")
+st.caption("💡 提示：圖中紫色虛線為目標 0→50 km/h 加速時間，棕色虛線為目標 0→最高車速加速時間。")
