@@ -648,9 +648,9 @@ st.plotly_chart(fig1, use_container_width=True)
 
 st.markdown("---")
 
-# ================== 圖2：車輪扭矩 vs 車速（修正 Y 軸範圍）==================
+# ================== 圖2：車輪扭矩 vs 車速（修正 Y 軸範圍 + 文字變更）==================
 st.markdown("## 📈 圖2：車輪扭矩 vs 車速")
-st.caption("藍色實線為最大車輪扭矩，紅色虛線為平路負載線（車輪側），綠色虛線為爬坡負載線。標記點為設計最高車速、馬達極速對應車速以及負載線與扭矩曲線的交點。")
+st.caption("藍色實線為最大車輪扭矩，紅色虛線為平路負載線（車輪側），綠色虛線為爬坡負載線。標記點為目標最高車速、馬達極速對應車速以及負載線與扭矩曲線的交點。")
 
 idx_design = np.argmin(np.abs(speed_kmh_flat - speed_kmh))
 T_design_flat = T_wheel_flat[idx_design]
@@ -663,7 +663,12 @@ if T_wheel_climb is not None:
     fig2.add_trace(go.Scatter(x=speed_kmh_climb, y=T_wheel_climb, mode='lines', name=f'爬坡負載線 ({grade_percent}%)', line=dict(color='green', width=3, dash='dot')))
 
 fig2.add_vline(x=speed_kmh, line_width=2, line_dash="dash", line_color="orange", opacity=0.9)
-fig2.add_trace(go.Scatter(x=[speed_kmh], y=[T_design_flat], mode='markers+text', name='設計最高車速點', text=[f'{speed_kmh:.0f} km/h, {T_design_flat:.1f} Nm'], textposition='top right', marker=dict(color='orange', size=12), textfont=dict(size=11)))
+fig2.add_trace(go.Scatter(x=[speed_kmh], y=[T_design_flat], mode='markers+text',
+                           name='目標最高車速',   # 修改點
+                           text=[f'{speed_kmh:.0f} km/h, {T_design_flat:.1f} Nm'],
+                           textposition='top right',
+                           marker=dict(color='orange', size=12),
+                           textfont=dict(size=11)))
 fig2.add_trace(go.Scatter(x=[v_max_motor], y=[T_at_vmax], mode='markers+text', name='馬達最高轉速對應車速', text=[f'馬達最高速\n{v_max_motor:.0f} km/h, {T_at_vmax:.1f} Nm'], textposition='top left', marker=dict(color='purple', size=12), textfont=dict(size=11)))
 
 # 平路交點 - 修改名稱
