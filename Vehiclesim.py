@@ -732,9 +732,30 @@ if "df_motor_operating_points" in st.session_state:
     ), secondary_y=False)
 
 # 恢復功率軸固定範圍，扭矩軸動態
-fig1.update_yaxes(title_text="扭矩 (Nm)", secondary_y=False, range=y_range)
-fig1.update_yaxes(title_text="功率 (kW)", secondary_y=True, range=[0, max_power_kw_used * 1.2])
-fig1.update_xaxes(title_text="轉速 (rpm)", range=[0, x_upper])
+# ================= 修正雙 Y 軸比例與零位線對齊 =================
+y_min_torque = y_range[0]
+y_max_torque = y_range[1]
+torque_span = y_max_torque - y_min_torque
+
+# 1. 計算扭矩 Y 軸的 0 點落在整體高度的什麼比例位置
+zero_ratio = abs(y_min_torque) / torque_span if torque_span > 0 else 0
+
+# 2. 設定功率軸的上限
+p_max = max_power_kw_used * 1.2
+
+# 3. 根據相同的比例，反推功率軸應該要留多少底部的負空間，讓 0 線對齊
+if zero_ratio < 1:
+    p_min = (zero_ratio * p_max) / (zero_ratio - 1)
+else:
+    p_min = 0
+
+# 4. 更新 Y 軸設定：開啟零位線加粗顯示，並關閉副軸的網格線(避免畫面凌亂)
+fig1.update_yaxes(title_text="扭矩 (Nm)", secondary_y=False, range=[y_min_torque, y_max_torque], 
+                  zeroline=True, zerolinecolor='gray', zerolinewidth=1.5)
+fig1.update_yaxes(title_text="功率 (kW)", secondary_y=True, range=[p_min, p_max], 
+                  zeroline=True, zerolinecolor='gray', zerolinewidth=1.5, showgrid=False)
+fig1.update_xaxes(title_text="轉速 (rpm)", range=[0, x_upper], 
+                  zeroline=True, zerolinecolor='gray', zerolinewidth=1.5)
 fig1.update_layout(legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5), margin=dict(l=20, r=20, t=40, b=20), height=500)
 st.plotly_chart(fig1, use_container_width=True)
 
