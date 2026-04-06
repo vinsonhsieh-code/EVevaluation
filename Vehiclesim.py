@@ -356,6 +356,29 @@ with st.sidebar:
     avg_speed_kmh = speed_kmh * avg_speed_ratio
     st.caption(f"計算平均車速: {avg_speed_kmh:.1f} km/h")
 
+    # ---------- 新增：行駛工況設定 (WLTP CSV 讀取) ----------
+    st.header("📁 行駛工況設定")
+    st.markdown("上傳 CSV 檔案（例如 WLTP 工況），需包含時間(秒)與車速(km/h)欄位。")
+    uploaded_file = st.file_uploader("選擇 CSV 檔案", type=["csv"], help="CSV 檔案應包含時間(s)和車速(km/h)欄位")
+    if uploaded_file is not None:
+        try:
+            df_cycle = pd.read_csv(uploaded_file)
+            st.success(f"成功讀取檔案，共 {len(df_cycle)} 筆資料")
+            # 讓使用者選擇欄位名稱（或自動檢測）
+            time_col = st.selectbox("時間欄位 (秒)", df_cycle.columns, index=df_cycle.columns.get_loc("time") if "time" in df_cycle.columns else 0)
+            speed_col = st.selectbox("車速欄位 (km/h)", df_cycle.columns, index=df_cycle.columns.get_loc("speed") if "speed" in df_cycle.columns else 0)
+            # 儲存到 session_state 供後續繪圖使用
+            st.session_state.df_cycle = df_cycle
+            st.session_state.time_col = time_col
+            st.session_state.speed_col = speed_col
+        except Exception as e:
+            st.error(f"讀取檔案失敗: {e}")
+            if "df_cycle" in st.session_state:
+                del st.session_state.df_cycle
+    else:
+        if "df_cycle" in st.session_state:
+            del st.session_state.df_cycle
+
     cd_preview = get_cd_by_vehicle(vehicle_type)
     fr_preview = FR
     avg_speed_ms_preview = avg_speed_kmh / 3.6
@@ -648,7 +671,7 @@ st.plotly_chart(fig1, use_container_width=True)
 
 st.markdown("---")
 
-# ================== 圖2：車輪扭矩 vs 車速（修正 Y 軸範圍 + 文字變更）==================
+# ================== 圖2：車輪扭矩 vs 車速 ==================
 st.markdown("## 📈 圖2：車輪扭矩 vs 車速")
 st.caption("藍色實線為最大車輪扭矩，紅色虛線為平路負載線（車輪側），綠色虛線為爬坡負載線。標記點為目標最高車速、馬達極速對應車速以及負載線與扭矩曲線的交點。")
 
@@ -664,14 +687,14 @@ if T_wheel_climb is not None:
 
 fig2.add_vline(x=speed_kmh, line_width=2, line_dash="dash", line_color="orange", opacity=0.9)
 fig2.add_trace(go.Scatter(x=[speed_kmh], y=[T_design_flat], mode='markers+text',
-                           name='目標最高車速',   # 修改點
+                           name='目標最高車速',
                            text=[f'{speed_kmh:.0f} km/h, {T_design_flat:.1f} Nm'],
                            textposition='top right',
                            marker=dict(color='orange', size=12),
                            textfont=dict(size=11)))
 fig2.add_trace(go.Scatter(x=[v_max_motor], y=[T_at_vmax], mode='markers+text', name='馬達最高轉速對應車速', text=[f'馬達最高速\n{v_max_motor:.0f} km/h, {T_at_vmax:.1f} Nm'], textposition='top left', marker=dict(color='purple', size=12), textfont=dict(size=11)))
 
-# 平路交點 - 修改名稱
+# 平路交點
 intersections_flat_wheel = find_intersection(v_from_n, T_wheel_max, speed_kmh_flat, T_wheel_flat)
 for i, (x_cross, y_cross) in enumerate(intersections_flat_wheel):
     fig2.add_trace(go.Scatter(x=[x_cross], y=[y_cross], mode='markers',
@@ -679,8 +702,6 @@ for i, (x_cross, y_cross) in enumerate(intersections_flat_wheel):
                                marker=dict(color='red', size=14, symbol='x'),
                                showlegend=(i==0)))
     fig2.add_annotation(x=x_cross, y=y_cross, text=f'{x_cross:.1f} km/h', showarrow=True, arrowhead=2, ax=30, ay=-40, font=dict(size=9))
-
-# 爬坡交點 - 修改名稱
 if T_wheel_climb is not None:
     intersections_climb_wheel = find_intersection(v_from_n, T_wheel_max, speed_kmh_climb, T_wheel_climb)
     for i, (x_cross, y_cross) in enumerate(intersections_climb_wheel):
@@ -690,12 +711,9 @@ if T_wheel_climb is not None:
                                    showlegend=(i==0)))
         fig2.add_annotation(x=x_cross, y=y_cross, text=f'{x_cross:.1f} km/h', showarrow=True, arrowhead=2, ax=30, ay=40, font=dict(size=9))
 
-# 設定 X 軸範圍：從 0 到 max(馬達極速, 設計車速) * 1.2
 x_max = max(v_max_motor, speed_kmh) * 1.2
 if x_max <= 0:
     x_max = 100
-
-# 修正 Y 軸範圍：僅根據最大車輪扭矩和平路負載線的最大值，排除爬坡負載線以避免軸過大
 y_max_val = max(T_wheel_max.max(), T_wheel_flat.max())
 if y_max_val <= 0:
     y_max_val = 1
@@ -736,4 +754,21 @@ fig3.update_yaxes(title_text="位移 (m)", secondary_y=True)
 st.plotly_chart(fig3, use_container_width=True)
 
 st.markdown("---")
-st.caption("💡 提示：圖中紫色虛線為目標 0→50 km/h 加速時間，棕色虛線為目標 0→最高車速加速時間。")
+
+# ================== 圖4：行駛工況曲線（若已上傳 CSV）==================
+if "df_cycle" in st.session_state:
+    st.markdown("## 📈 圖4：行駛工況曲線")
+    st.caption("上傳的行駛工況（車速 vs 時間）")
+    df_cycle = st.session_state.df_cycle
+    time_col = st.session_state.time_col
+    speed_col = st.session_state.speed_col
+    fig4 = go.Figure()
+    fig4.add_trace(go.Scatter(x=df_cycle[time_col], y=df_cycle[speed_col],
+                              mode='lines', name='車速', line=dict(color='blue', width=2)))
+    fig4.update_xaxes(title_text="時間 (秒)")
+    fig4.update_yaxes(title_text="車速 (km/h)")
+    fig4.update_layout(height=400, margin=dict(l=20, r=20, t=40, b=20))
+    st.plotly_chart(fig4, use_container_width=True)
+else:
+    st.markdown("---")
+    st.caption("💡 提示：圖中紫色虛線為目標 0→50 km/h 加速時間，棕色虛線為目標 0→最高車速加速時間。")
