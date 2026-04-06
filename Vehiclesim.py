@@ -732,24 +732,26 @@ if "df_motor_operating_points" in st.session_state:
     ), secondary_y=False)
 
 # 恢復功率軸固定範圍，扭矩軸動態
-# ================= 修正雙 Y 軸比例與零位線對齊 =================
+# ================= 修正雙 Y 軸：零位線對齊 + 峰值等比例縮放 =================
 y_min_torque = y_range[0]
 y_max_torque = y_range[1]
-torque_span = y_max_torque - y_min_torque
 
-# 1. 計算扭矩 Y 軸的 0 點落在整體高度的什麼比例位置
-zero_ratio = abs(y_min_torque) / torque_span if torque_span > 0 else 0
+# 1. 設定功率軸的上限 (p_max)
+# 利用「最大功率」與「最大扭矩」的比例來決定副 Y 軸的縮放。
+# 這裡除以 0.85 是為了讓功率曲線(金線)的最高點，剛好落在扭矩曲線(藍線)最高點的 85% 視覺高度。
+if T_peak > 0:
+    p_max = y_max_torque * (max_power_kw_used / (T_peak * 0.85))
+else:
+    p_max = max_power_kw_used * 1.2
 
-# 2. 設定功率軸的上限
-p_max = max_power_kw_used * 1.2
-
-# 3. 根據相同的比例，反推功率軸應該要留多少底部的負空間，讓 0 線對齊
-if zero_ratio < 1:
-    p_min = (zero_ratio * p_max) / (zero_ratio - 1)
+# 2. 設定功率軸的下限 (p_min)
+# 利用完美的相似三角形等比例縮放法，讓兩側的 0 點絕對切齊
+if y_max_torque > 0:
+    p_min = y_min_torque * (p_max / y_max_torque)
 else:
     p_min = 0
 
-# 4. 更新 Y 軸設定：開啟零位線加粗顯示，並關閉副軸的網格線(避免畫面凌亂)
+# 3. 更新軸線設定
 fig1.update_yaxes(title_text="扭矩 (Nm)", secondary_y=False, range=[y_min_torque, y_max_torque], 
                   zeroline=True, zerolinecolor='gray', zerolinewidth=1.5)
 fig1.update_yaxes(title_text="功率 (kW)", secondary_y=True, range=[p_min, p_max], 
