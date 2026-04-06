@@ -752,32 +752,34 @@ else:
     p_min = 0
 
 # 3. 更新軸線設定
-# ================= 修正雙 Y 軸比例完美對齊 & 強制標示特定刻度 =================
+# ================= 進階修正：雙 Y 軸比例對齊 & 特定刻度上色 =================
 y_min_torque = y_range[0]
 y_max_torque = y_range[1]
 
 # 1. 算出功率與扭矩的「完美對齊比例」
-# 這樣可以強迫功率曲線的最高點，視覺上剛好疊加在扭矩曲線的平坦最高點上
 ratio = max_power_kw_used / T_peak if T_peak > 0 else 1
 
 p_min = y_min_torque * ratio
 p_max = y_max_torque * ratio
 
-# 2. 自訂 Y 軸 (扭矩) 的刻度，強制標示出「最大扭矩 (如 14Nm)」與「0」
+# 2. 準備 X, Y, Y2 軸的基礎刻度 (排除我們想要特別上色的點)
 import numpy as np
-y_ticks = list(np.linspace(y_min_torque, y_max_torque, 6)) # 產生基礎刻度
-y_ticks.extend([0, T_peak]) # 強制加入 0 和 峰值扭矩
-y_ticks = sorted(list(set([round(v, 1) for v in y_ticks]))) # 排序並去重複
 
-# 3. 自訂 Y2 軸 (功率) 的刻度，按照相同比例映射，確保左右格線完美重合
+# 產生基礎刻度，並刻意避開 T_peak 與 0
+base_y_ticks = list(np.linspace(y_min_torque, y_max_torque, 6))
+clean_y_ticks = [v for v in base_y_ticks if abs(v - T_peak) > 0.5 and abs(v) > 0.5]
+clean_y_ticks.append(0) # 確保 0 存在且為白色
+y_ticks = sorted(list(set([round(v, 1) for v in clean_y_ticks])))
+
+# 產生基礎 Y2 (功率) 刻度
 p_ticks = [round(v * ratio, 2) for v in y_ticks]
 
-# 4. 自訂 X 軸 (轉速) 的刻度，強制標示出「基速 (Base Speed)」與「最高轉速」
+# 產生基礎 X (轉速) 刻度
 x_ticks = list(np.linspace(0, x_upper, 6))
 x_ticks.extend([base_speed, n_max_motor])
 x_ticks = sorted(list(set([round(v, -1) for v in x_ticks])))
 
-# 5. 更新圖表設定 (將刻度字體強制設為白色，維持您的版面風格)
+# 3. 更新圖表設定 (基礎刻度維持白色)
 fig1.update_yaxes(title_text="扭矩 (Nm)", secondary_y=False, 
                   range=[y_min_torque, y_max_torque], 
                   tickvals=y_ticks, tickfont=dict(color='white'),
@@ -791,6 +793,30 @@ fig1.update_yaxes(title_text="功率 (kW)", secondary_y=True,
 fig1.update_xaxes(title_text="轉速 (rpm)", range=[0, x_upper], 
                   tickvals=x_ticks, tickfont=dict(color='white'),
                   zeroline=True, zerolinecolor='gray', zerolinewidth=1.5)
+
+# 4. 加入彩色刻度註解 (Annotations)
+# 將特定數值貼在圖表邊緣外側 (xref="paper", yref="y")
+
+# (A) 扭力主軸 (左側) 的藍色最大扭力值
+fig1.add_annotation(
+    x=0, y=T_peak, xref="paper", yref="y",
+    text=f"<b>{T_peak:.1f}</b>", # 粗體標示
+    showarrow=False,
+    xanchor="right", xshift=-5, # 靠左對齊並往左微調
+    font=dict(color="blue", size=13)
+)
+
+# (B) 功率副軸 (右側) 的金色最大功率值
+fig1.add_annotation(
+    x=1, y=max_power_kw_used, xref="paper", yref="y2",
+    text=f"<b>{max_power_kw_used:.2f}</b>", # 粗體標示
+    showarrow=False,
+    xanchor="left", xshift=5, # 靠右對齊並往右微調
+    font=dict(color="gold", size=13)
+)
+
+# 如果圖表左側或右側的數字被裁切掉，可以微調 layout 的 margin
+fig1.update_layout(margin=dict(l=60, r=60, t=40, b=20))
 
 fig1.update_layout(legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5), margin=dict(l=20, r=20, t=40, b=20), height=500)
 st.plotly_chart(fig1, use_container_width=True)
