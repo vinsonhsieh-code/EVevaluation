@@ -822,7 +822,7 @@ fig2.add_trace(go.Scatter(x=speed_kmh_flat, y=T_wheel_flat, mode='lines', name='
 if T_wheel_climb is not None:
     fig2.add_trace(go.Scatter(x=speed_kmh_climb, y=T_wheel_climb, mode='lines', name=f'爬坡負載線 ({grade_percent}%)', line=dict(color='green', width=3, dash='dot')))
 
-# 標註關鍵點 (圓點)
+# 標註關鍵點 (只留圓點，文字改用獨立標籤)
 fig2.add_vline(x=speed_kmh, line_width=2, line_dash="dash", line_color="orange", opacity=0.9)
 fig2.add_trace(go.Scatter(x=[speed_kmh], y=[T_design_flat], mode='markers', name='目標最高車速', marker=dict(color='orange', size=10)))
 fig2.add_trace(go.Scatter(x=[v_max_motor], y=[T_at_vmax], mode='markers', name='馬達最高轉速對應車速', marker=dict(color='purple', size=10)))
@@ -831,15 +831,15 @@ fig2.add_trace(go.Scatter(x=[v_max_motor], y=[T_at_vmax], mode='markers', name='
 intersections_flat_wheel = find_intersection(v_from_n, T_wheel_max, speed_kmh_flat, T_wheel_flat)
 for i, (x_cross, y_cross) in enumerate(intersections_flat_wheel):
     fig2.add_trace(go.Scatter(x=[x_cross], y=[y_cross], mode='markers', name='平路交點' if i==0 else None, marker=dict(color='red', size=12, symbol='x'), showlegend=(i==0)))
-    # 平路交點數值：強制往「右下方」拉出
-    fig2.add_annotation(x=x_cross, y=y_cross, text=f'{x_cross:.1f} km/h<br>{y_cross:.1f} Nm', showarrow=True, arrowhead=2, ax=45, ay=40, font=dict(size=11, color="white"), bgcolor="rgba(255,0,0,0.4)", bordercolor="red", borderwidth=1)
+    # 平路交點數值：強制往「右下方 (ay=50)」拉出，避開上方
+    fig2.add_annotation(x=x_cross, y=y_cross, text=f'{x_cross:.1f} km/h<br>{y_cross:.1f} Nm', showarrow=True, arrowhead=2, ax=55, ay=50, font=dict(size=11, color="white"), bgcolor="rgba(255,0,0,0.4)", bordercolor="red", borderwidth=1)
 
 if T_wheel_climb is not None:
     intersections_climb_wheel = find_intersection(v_from_n, T_wheel_max, speed_kmh_climb, T_wheel_climb)
     for i, (x_cross, y_cross) in enumerate(intersections_climb_wheel):
         fig2.add_trace(go.Scatter(x=[x_cross], y=[y_cross], mode='markers', name='爬坡交點' if i==0 else None, marker=dict(color='green', size=12, symbol='x'), showlegend=(i==0)))
-        # 爬坡交點數值：強制往「左上方」拉出
-        fig2.add_annotation(x=x_cross, y=y_cross, text=f'{x_cross:.1f} km/h<br>{y_cross:.1f} Nm', showarrow=True, arrowhead=2, ax=-45, ay=-40, font=dict(size=11, color="white"), bgcolor="rgba(0,128,0,0.4)", bordercolor="green", borderwidth=1)
+        # 爬坡交點數值：強制往「左下方 (ay=50)」拉出，避開上方
+        fig2.add_annotation(x=x_cross, y=y_cross, text=f'{x_cross:.1f} km/h<br>{y_cross:.1f} Nm', showarrow=True, arrowhead=2, ax=-55, ay=50, font=dict(size=11, color="white"), bgcolor="rgba(0,128,0,0.4)", bordercolor="green", borderwidth=1)
 
 # WLTC 工作點
 if "df_motor_operating_points" in st.session_state:
@@ -851,23 +851,25 @@ if x_max <= 0: x_max = 100
 fig2.update_yaxes(title_text="車輪扭矩 (Nm)", range=[y_min_wheel, y_max_wheel], tickvals=y_ticks_w, tickfont=dict(color='white'), zeroline=True, zerolinecolor='gray', zerolinewidth=1.5)
 fig2.update_xaxes(title_text="車速 (km/h)", range=[0, x_max], tickfont=dict(color='white'), zeroline=True, zerolinecolor='gray', zerolinewidth=1.5)
 
-# ================= 最上層獨立標籤 (錯開防重疊設計) =================
+# ================= 最上層獨立標籤 (向外擴散防重疊設計) =================
 
 # 1. 左側 Y軸 最大車輪扭矩
 fig2.add_annotation(x=0, y=T_wheel_peak, xref="x", yref="y", text=f"<b>{T_wheel_peak:.1f}</b>", showarrow=False, xanchor="right", xshift=-15, font=dict(color="dodgerblue", size=14), bgcolor="rgba(26,28,35,0.9)", bordercolor="dodgerblue", borderwidth=1, borderpad=4)
 
-# 2. 目標車速標籤 - 箭頭往「右上方」拉高
-fig2.add_annotation(x=speed_kmh, y=T_design_flat, xref="x", yref="y", text=f"<b>目標: {speed_kmh:.0f} km/h</b>", showarrow=True, arrowhead=2, arrowcolor="orange", arrowsize=1, arrowwidth=2, ax=45, ay=-50, font=dict(color="orange", size=12), bgcolor="rgba(26,28,35,0.9)", bordercolor="orange", borderwidth=1, borderpad=3)
+# 2. 目標車速標籤 - 往「左上方 (ax=-50, ay=-65)」拉高，主動避開右側的極速標籤
+fig2.add_annotation(x=speed_kmh, y=T_design_flat, xref="x", yref="y", text=f"<b>目標: {speed_kmh:.0f} km/h</b>", showarrow=True, arrowhead=2, arrowcolor="orange", arrowsize=1, arrowwidth=2, ax=-50, ay=-65, font=dict(color="orange", size=12), bgcolor="rgba(26,28,35,0.9)", bordercolor="orange", borderwidth=1, borderpad=3)
 
-# 3. 馬達極限車速標籤 - 箭頭往「左上方」拉出
-fig2.add_annotation(x=v_max_motor, y=T_at_vmax, xref="x", yref="y", text=f"<b>極速: {v_max_motor:.0f} km/h<br>{T_at_vmax:.1f} Nm</b>", showarrow=True, arrowhead=2, arrowcolor="purple", arrowsize=1, arrowwidth=2, ax=-60, ay=-50, font=dict(color="#d8b4e2", size=12), bgcolor="rgba(26,28,35,0.9)", bordercolor="purple", borderwidth=1, borderpad=3)
+# 3. 馬達極限車速標籤 - 往「右上方 (ax=60, ay=-45)」拉出，利用右側的空白區域
+fig2.add_annotation(x=v_max_motor, y=T_at_vmax, xref="x", yref="y", text=f"<b>極速: {v_max_motor:.0f} km/h<br>{T_at_vmax:.1f} Nm</b>", showarrow=True, arrowhead=2, arrowcolor="purple", arrowsize=1, arrowwidth=2, ax=60, ay=-45, font=dict(color="#d8b4e2", size=12), bgcolor="rgba(26,28,35,0.9)", bordercolor="purple", borderwidth=1, borderpad=3)
 
 # ================= 更新版面 Margin =================
-fig2.update_layout(legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5), margin=dict(l=80, r=80, t=90, b=20), height=550)
+# 加大右側 (r=110) 與上方 (t=100) 的空間，確保往外推的標籤有足夠空間顯示
+fig2.update_layout(legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5), margin=dict(l=80, r=110, t=100, b=20), height=550)
 
 st.plotly_chart(fig2, use_container_width=True)
 
 st.markdown("---")
+
 
 # ================== 圖3：速度與位移 vs 時間 ==================
 st.markdown("## 📈 圖3：加速性能（速度與位移 vs 時間）")
