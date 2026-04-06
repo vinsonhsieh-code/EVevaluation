@@ -682,7 +682,6 @@ x_upper = n_max_motor * 1.1
 grid_step = T_peak / 4.0
 y_min_raw = min(0, T_motor_max.min(), torque_flat.min())
 
-# 防呆：確認 NaN 不會影響 min() 判斷
 if "df_motor_operating_points" in st.session_state:
     min_op = st.session_state.df_motor_operating_points['motor_torque_Nm'].min()
     if not np.isnan(min_op):
@@ -719,7 +718,7 @@ if motor_rpm_climb is not None:
     fig1.add_trace(go.Scatter(x=motor_rpm_climb, y=torque_climb, mode='lines', name=f'爬坡負載線 ({grade_percent}%)', line=dict(color='green', width=3, dash='dot')), secondary_y=False)
 fig1.add_trace(go.Scatter(x=n, y=P_motor_out, mode='lines', name='馬達功率', line=dict(color='gold', width=2, dash='solid')), secondary_y=True)
 
-# 標註關鍵點 (移除直接綁定的 text，只留圓點)
+# 標註關鍵點 (圓點)
 fig1.add_trace(go.Scatter(x=[0], y=[T_peak], mode='markers', name='最大扭矩點', marker=dict(color='dodgerblue', size=10)), secondary_y=False)
 fig1.add_trace(go.Scatter(x=[base_speed], y=[T_peak], mode='markers', name='基速點', marker=dict(color='green', size=10)), secondary_y=False)
 T_at_max_n = (max_power_kw_used * 1000) / (2 * math.pi * n_max_motor / 60) if n_max_motor > 0 else 0
@@ -730,19 +729,26 @@ fig1.add_vline(x=design_rpm, line_width=2, line_dash="dash", line_color="orange"
 T_at_design = np.interp(design_rpm, n, T_motor_max) if design_rpm <= n_max_motor else 0
 fig1.add_trace(go.Scatter(x=[design_rpm], y=[T_at_design], mode='markers', name=f'目標車速轉速', marker=dict(color='orange', size=10)), secondary_y=False)
 
-# 交點標記
+
+# ================= 新增：交點標記與防重疊數值標籤 =================
 intersections_flat = find_intersection(n, T_motor_max, motor_rpm_flat, torque_flat)
 for i, (x_cross, y_cross) in enumerate(intersections_flat):
     fig1.add_trace(go.Scatter(x=[x_cross], y=[y_cross], mode='markers', name='平路交點' if i==0 else None, marker=dict(color='red', size=12, symbol='x'), showlegend=(i==0)), secondary_y=False)
+    # 平路交點數值：強制往「右下方 (ax>0, ay>0)」拉出
+    fig1.add_annotation(x=x_cross, y=y_cross, text=f'{x_cross:.0f} rpm<br>{y_cross:.1f} Nm', showarrow=True, arrowhead=2, ax=45, ay=40, font=dict(size=11, color="white"), bgcolor="rgba(255,0,0,0.4)", bordercolor="red", borderwidth=1)
+
 if motor_rpm_climb is not None:
     intersections_climb = find_intersection(n, T_motor_max, motor_rpm_climb, torque_climb)
     for i, (x_cross, y_cross) in enumerate(intersections_climb):
         fig1.add_trace(go.Scatter(x=[x_cross], y=[y_cross], mode='markers', name='爬坡交點' if i==0 else None, marker=dict(color='green', size=12, symbol='x'), showlegend=(i==0)), secondary_y=False)
+        # 爬坡交點數值：強制往「左上方 (ax<0, ay<0)」拉出
+        fig1.add_annotation(x=x_cross, y=y_cross, text=f'{x_cross:.0f} rpm<br>{y_cross:.1f} Nm', showarrow=True, arrowhead=2, ax=-45, ay=-40, font=dict(size=11, color="white"), bgcolor="rgba(0,128,0,0.4)", bordercolor="green", borderwidth=1)
+
 
 # WLTC 工作點
 if "df_motor_operating_points" in st.session_state:
     df_op = st.session_state.df_motor_operating_points
-    fig1.add_trace(go.Scatter(x=df_op['motor_rpm'], y=df_op['motor_torque_Nm'], mode='markers', marker=dict(size=4, color='cyan', opacity=0.6, symbol='circle'), name='WLTC 需求工作點 (馬達側)', showlegend=True), secondary_y=False)
+    fig1.add_trace(go.Scatter(x=df_op['motor_rpm'], y=df_op['motor_torque_Nm'], mode='markers', marker=dict(size=4, color='cyan', opacity=0.6, symbol='circle'), name='WLTC 工作點', showlegend=True), secondary_y=False)
 
 # 設定 Y 軸與 X 軸
 fig1.update_yaxes(title_text="扭矩 (Nm)", secondary_y=False, range=[y_min_torque, y_max_torque], tickvals=y_ticks, tickfont=dict(color='white'), zeroline=True, zerolinecolor='gray', zerolinewidth=1.5)
@@ -750,60 +756,31 @@ fig1.update_yaxes(title_text="功率 (kW)", secondary_y=True, range=[p_min, p_ma
 fig1.update_xaxes(title_text="轉速 (rpm)", range=[0, x_upper], tickvals=x_ticks, tickfont=dict(color='white'), zeroline=True, zerolinecolor='gray', zerolinewidth=1.5)
 
 
-# ================= 最上層獨立標籤與刻度註解 (Annotations) =================
-# 背景設定為深灰色半透明，並加上各專屬顏色的邊框，確保永遠不會被線條干擾
+# ================= 最上層獨立標籤 (錯開防重疊設計) =================
 
-# 1. 左側 Y軸 最大扭力 (淡藍色)
-fig1.add_annotation(
-    x=0, y=T_peak, xref="paper", yref="y", text=f"<b>{T_peak:.1f}</b>",
-    showarrow=False, xanchor="right", xshift=-15,
-    font=dict(color="dodgerblue", size=14),
-    bgcolor="rgba(26,28,35,0.9)", bordercolor="dodgerblue", borderwidth=1, borderpad=4
-)
+# 1. 左側 Y軸 最大扭力
+fig1.add_annotation(x=0, y=T_peak, xref="paper", yref="y", text=f"<b>{T_peak:.1f}</b>", showarrow=False, xanchor="right", xshift=-15, font=dict(color="dodgerblue", size=14), bgcolor="rgba(26,28,35,0.9)", bordercolor="dodgerblue", borderwidth=1, borderpad=4)
 
-# 2. 右側 Y2軸 最大功率 (金色)
-fig1.add_annotation(
-    x=1, y=max_power_kw_used, xref="paper", yref="y2", text=f"<b>{max_power_kw_used:.2f}</b>",
-    showarrow=False, xanchor="left", xshift=15,
-    font=dict(color="gold", size=14),
-    bgcolor="rgba(26,28,35,0.9)", bordercolor="gold", borderwidth=1, borderpad=4
-)
+# 2. 右側 Y2軸 最大功率
+fig1.add_annotation(x=1, y=max_power_kw_used, xref="paper", yref="y2", text=f"<b>{max_power_kw_used:.2f}</b>", showarrow=False, xanchor="left", xshift=15, font=dict(color="gold", size=14), bgcolor="rgba(26,28,35,0.9)", bordercolor="gold", borderwidth=1, borderpad=4)
 
-# 3. 基速點標籤 (綠色) - 箭頭往正上方拉出
-fig1.add_annotation(
-    x=base_speed, y=T_peak, xref="x", yref="y", text=f"<b>基速: {base_speed:.0f} rpm</b>",
-    showarrow=True, arrowhead=2, arrowcolor="green", arrowsize=1, arrowwidth=2,
-    ax=0, ay=-40, 
-    font=dict(color="lightgreen", size=12),
-    bgcolor="rgba(26,28,35,0.9)", bordercolor="green", borderwidth=1, borderpad=3
-)
+# 3. 基速點標籤 - 箭頭往「正上方」拉出
+fig1.add_annotation(x=base_speed, y=T_peak, xref="x", yref="y", text=f"<b>基速: {base_speed:.0f} rpm</b>", showarrow=True, arrowhead=2, arrowcolor="green", arrowsize=1, arrowwidth=2, ax=0, ay=-40, font=dict(color="lightgreen", size=12), bgcolor="rgba(26,28,35,0.9)", bordercolor="green", borderwidth=1, borderpad=3)
 
-# 4. 目標車速轉速標籤 (橘色) - 箭頭往右上拉出
-fig1.add_annotation(
-    x=design_rpm, y=T_at_design, xref="x", yref="y", text=f"<b>{design_rpm:.0f} rpm</b>",
-    showarrow=True, arrowhead=2, arrowcolor="orange", arrowsize=1, arrowwidth=2,
-    ax=40, ay=-45, 
-    font=dict(color="orange", size=12),
-    bgcolor="rgba(26,28,35,0.9)", bordercolor="orange", borderwidth=1, borderpad=3
-)
+# 4. 目標車速轉速標籤 - 箭頭往「右上方」拉高，避開基速
+fig1.add_annotation(x=design_rpm, y=T_at_design, xref="x", yref="y", text=f"<b>目標: {design_rpm:.0f} rpm</b>", showarrow=True, arrowhead=2, arrowcolor="orange", arrowsize=1, arrowwidth=2, ax=45, ay=-70, font=dict(color="orange", size=12), bgcolor="rgba(26,28,35,0.9)", bordercolor="orange", borderwidth=1, borderpad=3)
 
-# 5. 最高轉速點標籤 (紫色) - 箭頭往左上拉出避免超出圖表
-fig1.add_annotation(
-    x=n_max_motor, y=T_at_max_n, xref="x", yref="y", text=f"<b>{n_max_motor:.0f} rpm<br>{T_at_max_n:.1f} Nm</b>",
-    showarrow=True, arrowhead=2, arrowcolor="purple", arrowsize=1, arrowwidth=2,
-    ax=-55, ay=-40, 
-    font=dict(color="#d8b4e2", size=12),
-    bgcolor="rgba(26,28,35,0.9)", bordercolor="purple", borderwidth=1, borderpad=3
-)
+# 5. 最高轉速點標籤 - 箭頭往「左上方」拉出，避免超出圖表右界
+fig1.add_annotation(x=n_max_motor, y=T_at_max_n, xref="x", yref="y", text=f"<b>極速: {n_max_motor:.0f} rpm<br>{T_at_max_n:.1f} Nm</b>", showarrow=True, arrowhead=2, arrowcolor="purple", arrowsize=1, arrowwidth=2, ax=-60, ay=-50, font=dict(color="#d8b4e2", size=12), bgcolor="rgba(26,28,35,0.9)", bordercolor="purple", borderwidth=1, borderpad=3)
 
 # ================= 更新版面 Margin =================
-# 加大左右與上方的留白空間 (t=70, l=80, r=80)，讓向外拉出的標籤有足夠空間顯示
-fig1.update_layout(legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5), 
-                   margin=dict(l=80, r=80, t=70, b=20), height=550)
+# 加大上方 (t=90) 確保往上拉高的標籤不會被網頁切掉
+fig1.update_layout(legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5), margin=dict(l=80, r=80, t=90, b=20), height=550)
 
 st.plotly_chart(fig1, use_container_width=True)
 
 st.markdown("---")
+
 
 # ================== 圖2：車輪扭矩 vs 車速 + WLTC 工作點（含負扭矩）==================
 st.markdown("## 📈 圖2：車輪扭矩 vs 車速 + WLTC 工作點")
