@@ -5,7 +5,6 @@ import math
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from io import BytesIO
-import json
 
 # ================== 常數與預設參數 ==================
 G = 9.81
@@ -193,17 +192,11 @@ def simulate_acceleration(mass, area, cd, fr, wheel_radius_m, gear_ratio, motor_
 
     return np.array(time_list), np.array(speed_list), np.array(disp_list)
 
-# ================== WLTC 工作點計算（包含馬達側與車輪側）==================
+# ================== WLTC 工作點計算 ==================
 def compute_motor_operating_points_from_wltc(df_wltc, mass, area, cd, fr, wheel_radius_m, gear_ratio, gear_eff):
-    """
-    根據 WLTC 數據計算每個時間點的馬達轉速與扭矩，以及車輪側扭矩與車速。
-    df_wltc: 必須包含 'time', 'speed_kmh', 'accel_ms2' 欄位
-    gear_eff: 齒輪箱效率 (小數)
-    返回: DataFrame 包含 time, speed_kmh, motor_rpm, motor_torque_Nm, wheel_torque_Nm
-    """
-    times = df_wltc['time'].values
-    speeds_kmh = df_wltc['speed_kmh'].values
-    accels = df_wltc['accel_ms2'].values
+    times = df_wltc['time'].to_list()
+    speeds_kmh = df_wltc['speed_kmh'].to_list()
+    accels = df_wltc['accel_ms2'].to_list()
     n = len(times)
     F_roll_const = mass * G * fr
     factor_aero = 0.5 * RHO * cd * area
@@ -218,12 +211,12 @@ def compute_motor_operating_points_from_wltc(df_wltc, mass, area, cd, fr, wheel_
         F_accel = mass * accels[i]
         F_tractive = F_roll + F_air + F_accel
         motor_rpm[i] = v_ms / wheel_circ * 60 * gear_ratio
-        # 扭矩計算（包含傳動效率）
+        
         if F_tractive >= 0:
             motor_torque[i] = F_tractive * wheel_radius_m / (gear_ratio * gear_eff)
         else:
             motor_torque[i] = F_tractive * wheel_radius_m / (gear_ratio * gear_eff)
-        # 車輪側扭矩 = 馬達扭矩 * 減速比 * 傳動效率
+            
         wheel_torque[i] = motor_torque[i] * gear_ratio * gear_eff
     result_df = pd.DataFrame({
         'time': times,
@@ -409,29 +402,31 @@ with st.sidebar:
         try:
             df_wltc = pd.read_csv(wltc_file)
             st.success(f"成功讀取 WLTC 工況，共 {len(df_wltc)} 筆資料")
-           # 自動抓取對應的欄位索引，避免全部預設選到第1個欄位導致數值爆炸
-idx_t = 0
-idx_v = 1 if len(df_wltc.columns) > 1 else 0
-idx_a = 2 if len(df_wltc.columns) > 2 else 0
-
-time_col = st.selectbox("時間欄位 (秒)", df_wltc.columns, index=idx_t, key="wltc_time")
-speed_col = st.selectbox("車速欄位 (km/h)", df_wltc.columns, index=idx_v, key="wltc_speed")
-accel_col = st.selectbox("加速度欄位 (m/s²)", df_wltc.columns, index=idx_a, key="wltc_accel")
-
-df_wltc_clean = df_wltc[[time_col, speed_col, accel_col]].copy()
-df_wltc_clean.columns = ['time', 'speed_kmh', 'accel_ms2']
-
-# 強制清除空值，避免後續計算產生 NaN 導致 math.floor 當機
-df_wltc_clean = df_wltc_clean.fillna(0)
+            
+            # 【防呆修正】自動配對欄位預設值，避免選錯導致數字爆炸當機
+            idx_t = 0
+            idx_v = 1 if len(df_wltc.columns) > 1 else 0
+            idx_a = 2 if len(df_wltc.columns) > 2 else 0
+            
+            time_col = st.selectbox("時間欄位 (秒)", df_wltc.columns, index=idx_t, key="wltc_time")
+            speed_col = st.selectbox("車速欄位 (km/h)", df_wltc.columns, index=idx_v, key="wltc_speed")
+            accel_col = st.selectbox("加速度欄位 (m/s²)", df_wltc.columns, index=idx_a, key="wltc_accel")
+            
+            df_wltc_clean = df_wltc[[time_col, speed_col, accel_col]].copy()
+            df_wltc_clean.columns = ['time', 'speed_kmh', 'accel_ms2']
+            df_wltc_clean = df_wltc_clean.fillna(0) # 防呆：補 0 避免後續 NaN 當機
+            
             st.session_state.df_wltc_raw = df_wltc
             st.session_state.wltc_time_col = time_col
             st.session_state.wltc_speed_col = speed_col
             st.session_state.wltc_accel_col = accel_col
+            
             if 'gear_ratio' in locals() and gear_ratio is not None:
                 gear_ratio_val = gear_ratio
             else:
                 gear_ratio_val = estimate_gearbox(speed_ms, wheel_radius_m)
             gear_eff_val = gear_eff / 100.0
+            
             df_op = compute_motor_operating_points_from_wltc(
                 df_wltc_clean, total_mass, area, cd, fr, wheel_radius_m, gear_ratio_val, gear_eff_val
             )
@@ -686,14 +681,18 @@ x_upper = n_max_motor * 1.1
 # 精確計算網格間距 (只留上方一格)
 grid_step = T_peak / 4.0
 y_min_raw = min(0, T_motor_max.min(), torque_flat.min())
+
+# 防呆：確認 NaN 不會影響 min() 判斷
 if "df_motor_operating_points" in st.session_state:
-    y_min_raw = min(y_min_raw, st.session_state.df_motor_operating_points['motor_torque_Nm'].min())
+    min_op = st.session_state.df_motor_operating_points['motor_torque_Nm'].min()
+    if not np.isnan(min_op):
+        y_min_raw = min(y_min_raw, min_op)
 y_min_torque = math.floor(y_min_raw / grid_step) * grid_step
 
 y_max_torque = T_peak + grid_step
 if "df_motor_operating_points" in st.session_state:
     max_op = st.session_state.df_motor_operating_points['motor_torque_Nm'].max()
-    if max_op > y_max_torque:
+    if not np.isnan(max_op) and max_op > y_max_torque:
         y_max_torque = math.ceil(max_op / grid_step) * grid_step
 
 ratio = max_power_kw_used / T_peak if T_peak > 0 else 1
@@ -803,8 +802,8 @@ fig1.update_layout(legend=dict(orientation="h", yanchor="bottom", y=1.02, xancho
                    margin=dict(l=80, r=80, t=70, b=20), height=550)
 
 st.plotly_chart(fig1, use_container_width=True)
-st.markdown("---")
 
+st.markdown("---")
 
 # ================== 圖2：車輪扭矩 vs 車速 + WLTC 工作點（含負扭矩）==================
 st.markdown("## 📈 圖2：車輪扭矩 vs 車速 + WLTC 工作點")
@@ -818,12 +817,18 @@ y_min_wheel = min(0, T_wheel_max.min(), T_wheel_flat.min())
 y_max_wheel = max(T_wheel_max.max(), T_wheel_flat.max())
 if "df_motor_operating_points" in st.session_state:
     df_op = st.session_state.df_motor_operating_points
-    y_min_wheel = min(y_min_wheel, df_op['wheel_torque_Nm'].min())
-    y_max_wheel = max(y_max_wheel, df_op['wheel_torque_Nm'].max())
+    # 防呆：確保讀取不會抓到 NaN
+    min_op_wheel = df_op['wheel_torque_Nm'].min()
+    if not np.isnan(min_op_wheel):
+        y_min_wheel = min(y_min_wheel, min_op_wheel)
+    max_op_wheel = df_op['wheel_torque_Nm'].max()
+    if not np.isnan(max_op_wheel):
+        y_max_wheel = max(y_max_wheel, max_op_wheel)
+
 y_range_wheel = [y_min_wheel, y_max_wheel * 1.05]
 
 fig2 = go.Figure()
-fig2.add_trace(go.Scatter(x=v_from_n, y=T_wheel_max, mode='lines', name='最大車輪扭矩', line=dict(color='blue', width=3)))
+fig2.add_trace(go.Scatter(x=v_from_n, y=T_wheel_max, mode='lines', name='最大車輪扭矩', line=dict(color='dodgerblue', width=3)))
 fig2.add_trace(go.Scatter(x=speed_kmh_flat, y=T_wheel_flat, mode='lines', name='平路負載線', line=dict(color='red', width=3, dash='dash')))
 if T_wheel_climb is not None:
     fig2.add_trace(go.Scatter(x=speed_kmh_climb, y=T_wheel_climb, mode='lines', name=f'爬坡負載線 ({grade_percent}%)', line=dict(color='green', width=3, dash='dot')))
@@ -866,8 +871,8 @@ if "df_motor_operating_points" in st.session_state:
 x_max = max(v_max_motor, speed_kmh) * 1.2
 if x_max <= 0:
     x_max = 100
-fig2.update_yaxes(title_text="扭矩 (Nm)", range=y_range_wheel)
-fig2.update_xaxes(title_text="車速 (km/h)", range=[0, x_max])
+fig2.update_yaxes(title_text="扭矩 (Nm)", range=y_range_wheel, zeroline=True, zerolinecolor='gray', zerolinewidth=1.5)
+fig2.update_xaxes(title_text="車速 (km/h)", range=[0, x_max], zeroline=True, zerolinecolor='gray', zerolinewidth=1.5)
 fig2.update_layout(legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5), margin=dict(l=20, r=20, t=40, b=20), height=400)
 st.plotly_chart(fig2, use_container_width=True)
 
@@ -878,7 +883,7 @@ st.markdown("## 📈 圖3：加速性能（速度與位移 vs 時間）")
 st.caption("藍色實線為車速隨時間變化，紅色虛線為位移隨時間變化。垂直線標註實際達到50 km/h和最高車速的時間，以及目標加速時間。")
 
 fig3 = make_subplots(specs=[[{"secondary_y": True}]])
-fig3.add_trace(go.Scatter(x=time_acc, y=speed_acc, mode='lines', name='車速 (km/h)', line=dict(color='blue', width=3)), secondary_y=False)
+fig3.add_trace(go.Scatter(x=time_acc, y=speed_acc, mode='lines', name='車速 (km/h)', line=dict(color='dodgerblue', width=3)), secondary_y=False)
 fig3.add_trace(go.Scatter(x=time_acc, y=disp_acc, mode='lines', name='位移 (m)', line=dict(color='red', width=2, dash='dash')), secondary_y=True)
 
 idx_50 = np.argmax(speed_acc >= 50)
