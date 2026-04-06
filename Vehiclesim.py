@@ -752,12 +752,62 @@ else:
     p_min = 0
 
 # 3. 更新軸線設定
-fig1.update_yaxes(title_text="扭矩 (Nm)", secondary_y=False, range=[y_min_torque, y_max_torque], 
-                  zeroline=True, zerolinecolor='gray', zerolinewidth=1.5)
-fig1.update_yaxes(title_text="功率 (kW)", secondary_y=True, range=[p_min, p_max], 
-                  zeroline=True, zerolinecolor='gray', zerolinewidth=1.5, showgrid=False)
-fig1.update_xaxes(title_text="轉速 (rpm)", range=[0, x_upper], 
-                  zeroline=True, zerolinecolor='gray', zerolinewidth=1.5)
+# ================= 完美同步雙 Y 軸比例與自訂座標刻度 =================
+y_min_torque = y_range[0]
+y_max_torque = y_range[1]
+
+# 1. 核心修正：計算「峰值功率」與「峰值扭矩」的數學比例
+# 讓功率 Y 軸的上下限完全對齊扭矩 Y 軸的視覺高度，保證兩條曲線完美重合
+power_to_torque_ratio = max_power_kw_used / T_peak if T_peak > 0 else 1
+p_max = y_max_torque * power_to_torque_ratio
+p_min = y_min_torque * power_to_torque_ratio
+
+# 2. 建立強制顯示的專屬刻度 (Tick values)
+# X軸 (轉速)：加入 0、基速 (恆扭矩轉折點)、最高轉速
+x_ticks = list(range(0, int(x_upper) + 1000, 2000)) + [base_speed, n_max_motor]
+# 過濾掉太靠近特殊點的常規點，避免文字重疊
+x_ticks = [v for v in x_ticks if not (abs(v - base_speed) > 0 and abs(v - base_speed) < 800) and not (abs(v - n_max_motor) > 0 and abs(v - n_max_motor) < 800)]
+
+# Y軸 (扭矩)：加入 0、最大扭矩 (如 14 Nm 或 18 Nm)
+y_ticks = list(range(int(y_min_torque), int(y_max_torque) + 5, 5)) + [T_peak]
+y_ticks = [v for v in y_ticks if not (abs(v - T_peak) > 0 and abs(v - T_peak) < 2)]
+
+# 副Y軸 (功率)：加入 0、最大功率
+p_ticks = list(np.arange(int(p_min), int(p_max) + 2, 2.0)) + [max_power_kw_used]
+p_ticks = [v for v in p_ticks if not (abs(v - max_power_kw_used) > 0 and abs(v - max_power_kw_used) < 0.8)]
+
+# 3. 更新圖表設定
+# 主 Y 軸 (左側：扭矩)
+fig1.update_yaxes(
+    title_text="扭矩 (Nm)", 
+    secondary_y=False, 
+    range=[y_min_torque, y_max_torque], 
+    zeroline=True, zerolinecolor='gray', zerolinewidth=2,
+    tickvals=y_ticks,  
+    ticktext=[f"<b>{v:.1f}</b>" if v == T_peak else str(int(v)) for v in y_ticks], # 峰值扭矩特別加粗並保留小數
+    tickfont=dict(color="blue")
+)
+
+# 副 Y 軸 (右側：功率)
+fig1.update_yaxes(
+    title_text="功率 (kW)", 
+    secondary_y=True, 
+    range=[p_min, p_max], 
+    zeroline=True, zerolinecolor='gray', zerolinewidth=2, showgrid=False,
+    tickvals=p_ticks,
+    ticktext=[f"<b>{v:.1f}</b>" if v == max_power_kw_used else str(int(v)) for v in p_ticks],
+    tickfont=dict(color="goldenrod")
+)
+
+# X 軸 (下方：轉速)
+fig1.update_xaxes(
+    title_text="轉速 (rpm)", 
+    range=[0, x_upper], 
+    zeroline=True, zerolinecolor='gray', zerolinewidth=2,
+    tickvals=x_ticks,
+    ticktext=[f"<b>{v:.0f}</b>" if v in [base_speed, n_max_motor] else str(int(v)) for v in x_ticks]
+)
+# ====================================================================
 fig1.update_layout(legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5), margin=dict(l=20, r=20, t=40, b=20), height=500)
 st.plotly_chart(fig1, use_container_width=True)
 
