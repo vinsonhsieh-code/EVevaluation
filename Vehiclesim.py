@@ -648,7 +648,7 @@ st.plotly_chart(fig1, use_container_width=True)
 
 st.markdown("---")
 
-# ================== 圖2：車輪扭矩 vs 車速（已修改交點名稱）==================
+# ================== 圖2：車輪扭矩 vs 車速（修正 Y 軸範圍）==================
 st.markdown("## 📈 圖2：車輪扭矩 vs 車速")
 st.caption("藍色實線為最大車輪扭矩，紅色虛線為平路負載線（車輪側），綠色虛線為爬坡負載線。標記點為設計最高車速、馬達極速對應車速以及負載線與扭矩曲線的交點。")
 
@@ -685,17 +685,15 @@ if T_wheel_climb is not None:
                                    showlegend=(i==0)))
         fig2.add_annotation(x=x_cross, y=y_cross, text=f'{x_cross:.1f} km/h', showarrow=True, arrowhead=2, ax=30, ay=40, font=dict(size=9))
 
-x_vals = [speed_kmh * 1.2, v_max_motor * 1.1]
-if intersections_flat_wheel:
-    x_vals.extend([p[0] for p in intersections_flat_wheel])
-if intersections_climb_wheel:
-    x_vals.extend([p[0] for p in intersections_climb_wheel])
-x_max = max(x_vals)
+# 設定 X 軸範圍：從 0 到 max(馬達極速, 設計車速) * 1.2
+x_max = max(v_max_motor, speed_kmh) * 1.2
+if x_max <= 0:
+    x_max = 100
 
-# 手動設定 Y 軸範圍：取最大車輪扭矩、平路負載線、爬坡負載線的最大值，乘上 1.2 倍
+# 修正 Y 軸範圍：僅根據最大車輪扭矩和平路負載線的最大值，排除爬坡負載線以避免軸過大
 y_max_val = max(T_wheel_max.max(), T_wheel_flat.max())
-if T_wheel_climb is not None:
-    y_max_val = max(y_max_val, T_wheel_climb.max())
+if y_max_val <= 0:
+    y_max_val = 1
 fig2.update_yaxes(title_text="扭矩 (Nm)", range=[0, y_max_val * 1.2])
 fig2.update_xaxes(title_text="車速 (km/h)", range=[0, x_max])
 fig2.update_layout(legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5), margin=dict(l=20, r=20, t=40, b=20), height=400)
