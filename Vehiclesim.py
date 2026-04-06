@@ -409,11 +409,20 @@ with st.sidebar:
         try:
             df_wltc = pd.read_csv(wltc_file)
             st.success(f"成功讀取 WLTC 工況，共 {len(df_wltc)} 筆資料")
-            time_col = st.selectbox("時間欄位 (秒)", df_wltc.columns, key="wltc_time")
-            speed_col = st.selectbox("車速欄位 (km/h)", df_wltc.columns, key="wltc_speed")
-            accel_col = st.selectbox("加速度欄位 (m/s²)", df_wltc.columns, key="wltc_accel")
-            df_wltc_clean = df_wltc[[time_col, speed_col, accel_col]].copy()
-            df_wltc_clean.columns = ['time', 'speed_kmh', 'accel_ms2']
+           # 自動抓取對應的欄位索引，避免全部預設選到第1個欄位導致數值爆炸
+idx_t = 0
+idx_v = 1 if len(df_wltc.columns) > 1 else 0
+idx_a = 2 if len(df_wltc.columns) > 2 else 0
+
+time_col = st.selectbox("時間欄位 (秒)", df_wltc.columns, index=idx_t, key="wltc_time")
+speed_col = st.selectbox("車速欄位 (km/h)", df_wltc.columns, index=idx_v, key="wltc_speed")
+accel_col = st.selectbox("加速度欄位 (m/s²)", df_wltc.columns, index=idx_a, key="wltc_accel")
+
+df_wltc_clean = df_wltc[[time_col, speed_col, accel_col]].copy()
+df_wltc_clean.columns = ['time', 'speed_kmh', 'accel_ms2']
+
+# 強制清除空值，避免後續計算產生 NaN 導致 math.floor 當機
+df_wltc_clean = df_wltc_clean.fillna(0)
             st.session_state.df_wltc_raw = df_wltc
             st.session_state.wltc_time_col = time_col
             st.session_state.wltc_speed_col = speed_col
