@@ -148,32 +148,31 @@ def find_intersection(x1, y1, x2, y2):
             intersections.append((x_cross, y_cross))
     return intersections
 
-def simulate_acceleration(mass, area, cd, fr, wheel_radius_m, gear_ratio, motor_spec, base_speed, T_peak, speed_max_ms, dt=0.1):
+def simulate_acceleration(mass, area, cd, fr, wheel_radius_m, gear_ratio, motor_spec, base_speed, T_peak, speed_max_ms, dt=0.1, custom_tn_df=None):
     n_max = motor_spec['最高轉速 (rpm)']
     P_peak = motor_spec['最大功率 (kW)']
 
     def get_max_torque(v):
         if v <= 0:
+            v_n = 0
+        else:
+            v_n = v * 60 / (2 * math.pi * wheel_radius_m) * gear_ratio
+            
+        if custom_tn_df is not None:
+            return np.interp(v_n, custom_tn_df['rpm'].values, custom_tn_df['torque'].values, right=0)
+            
+        if v_n <= base_speed:
             return T_peak
-        n = v * 60 / (2 * math.pi * wheel_radius_m) * gear_ratio
-        if n <= base_speed:
-            return T_peak
-        elif n <= n_max:
-            return (P_peak * 1000) / (2 * math.pi * n / 60)
+        elif v_n <= n_max:
+            return (P_peak * 1000) / (2 * math.pi * v_n / 60)
         else:
             return 0
 
-    t = 0
-    v = 0
-    x = 0
-    time_list = [0]
-    speed_list = [0]
-    disp_list = [0]
+    t, v, x = 0, 0, 0
+    time_list, speed_list, disp_list = [0], [0], [0]
 
     def resistance(v_ms):
-        F_roll = mass * G * fr
-        F_air = 0.5 * RHO * cd * area * v_ms**2
-        return F_roll + F_air
+        return (mass * G * fr) + (0.5 * RHO * cd * area * v_ms**2)
 
     while v < speed_max_ms * 0.99 and t < 60:
         T_motor = get_max_torque(v)
@@ -242,8 +241,7 @@ def render_json_with_diff(data, default_data):
         else:
             return str(value)
 
-    lines = []
-    lines.append("{")
+    lines = ["{"]
     keys = list(data.keys())
     for i, key in enumerate(keys):
         value = data[key]
@@ -253,8 +251,7 @@ def render_json_with_diff(data, default_data):
     return "<br>".join(lines)
 
 def render_battery_with_diff(battery_spec, default_battery_spec):
-    if default_battery_spec is None:
-        default_battery_spec = battery_spec
+    if default_battery_spec is None: default_battery_spec = battery_spec
     lines = []
     descriptions = {
         '類型': '常見的電動載具電池類型，此處為鋰離子電池。',
@@ -353,8 +350,8 @@ with st.sidebar:
         else:
             voltage = int(voltage_option.replace('V', ''))
 
-        est_mode = st.radio("估算模式", ['自動估算', '手動輸入'], index=0,
-                            help="自動估算：根據目標車速計算所需功率。手動輸入：您可分別設定最大功率、最大扭矩與最高轉速。")
+        est_mode = st.radio("估算模式", ['手動輸入', '自動估算', '讀取馬達TN曲線'], index=0,
+                            help="手動輸入：設定最大功率、扭矩與轉速。自動估算：根據目標車速計算所需功率。讀取馬達TN曲線：上傳自訂的轉速與扭力對應 CSV 檔。")
 
         if est_mode == '自動估算':
             required_power, _ = calculate_power_requirements(total_mass, speed_ms, area, cd, fr)
@@ -363,12 +360,49 @@ with st.sidebar:
             manual_max_power = max_power_kw
             manual_peak_torque = None
             manual_max_rpm = None
-        else:
+            custom_tn_df = None
+        elif est_mode == '手動輸入':
             manual_max_power = st.number_input("最大功率 (kW)", min_value=0.1, value=4.4, step=0.1)
             manual_peak_torque = st.number_input("最大扭矩 (Nm)", min_value=1.0, value=18.0, step=0.1)
             manual_max_rpm = st.number_input("最高轉速 (rpm)", min_value=100, value=9000, step=100)
             base_speed_calc = (manual_max_power * 1000 * 60) / (2 * math.pi * manual_peak_torque)
             st.caption(f"對應基速 ≈ {base_speed_calc:.0f} rpm")
+            custom_tn_df = None
+        else: # 讀取馬達TN曲線
+            st.markdown("請上傳包含轉速(rpm)與扭矩(Nm)的 CSV 檔案")
+            tn_file = st.file_uploader("上傳 TN 曲線 (CSV)", type=["csv"], key="tn_upload")
+            custom_tn_df = None
+            # 設定安全的預設值，避免未上傳檔案時報錯
+            manual_max_power = 4.4 
+            manual_peak_torque = 18.0
+            manual_max_rpm = 9000
+            
+            if tn_file is not None:
+                try:
+                    df_tn = pd.read_csv(tn_file)
+                    st.success("成功讀取 TN 曲線資料")
+                    rpm_col = st.selectbox("請選擇 轉速(rpm) 欄位", df_tn.columns, index=0)
+                    t_col = st.selectbox("請選擇 扭矩(Nm) 欄位", df_tn.columns, index=1 if len(df_tn.columns) > 1 else 0)
+                    
+                    df_tn = df_tn.sort_values(by=rpm_col).dropna(subset=[rpm_col, t_col])
+                    custom_tn_df = df_tn[[rpm_col, t_col]].copy()
+                    custom_tn_df.columns = ['rpm', 'torque']
+                    
+                    # 計算各點功率 (kW) = T * rpm / 9550
+                    custom_tn_df['power_kw'] = custom_tn_df['torque'] * custom_tn_df['rpm'] / 9550.0
+                    
+                    # 從資料中自動提取極限值
+                    manual_max_rpm = custom_tn_df['rpm'].max()
+                    manual_peak_torque = custom_tn_df['torque'].max()
+                    manual_max_power = custom_tn_df['power_kw'].max()
+                    
+                    # 估算基速點 (功率達到最大的那個轉速)
+                    base_speed_idx = custom_tn_df['power_kw'].idxmax()
+                    base_speed_calc = custom_tn_df.loc[base_speed_idx, 'rpm']
+                    
+                    st.info(f"📊 解析結果：最大扭矩 **{manual_peak_torque:.1f} Nm**, 最高轉速 **{manual_max_rpm:.0f} rpm**, 最大功率 **{manual_max_power:.2f} kW**")
+                except Exception as e:
+                    st.error(f"解析檔案失敗: {e}")
 
         motor_eff = st.number_input("馬達效率 (%)", min_value=0.0, max_value=100.0, value=90.0, step=1.0,
                                     help="固定工作點下的馬達效率，用於里程估計，也會顯示在馬達規格中。")
@@ -403,7 +437,6 @@ with st.sidebar:
             df_wltc = pd.read_csv(wltc_file)
             st.success(f"成功讀取 WLTC 工況，共 {len(df_wltc)} 筆資料")
             
-            # 【防呆修正】自動配對欄位預設值，避免選錯導致數字爆炸當機
             idx_t = 0
             idx_v = 1 if len(df_wltc.columns) > 1 else 0
             idx_a = 2 if len(df_wltc.columns) > 2 else 0
@@ -414,7 +447,7 @@ with st.sidebar:
             
             df_wltc_clean = df_wltc[[time_col, speed_col, accel_col]].copy()
             df_wltc_clean.columns = ['time', 'speed_kmh', 'accel_ms2']
-            df_wltc_clean = df_wltc_clean.fillna(0) # 防呆：補 0 避免後續 NaN 當機
+            df_wltc_clean = df_wltc_clean.fillna(0)
             
             st.session_state.df_wltc_raw = df_wltc
             st.session_state.wltc_time_col = time_col
@@ -461,6 +494,7 @@ with st.sidebar:
     st.markdown("---")
     st.caption("修改參數後，下方結果會自動更新")
 
+
 # ================== 計算核心 ==================
 if 'gear_ratio' not in locals() or gear_ratio is None:
     gear_ratio = estimate_gearbox(speed_ms, wheel_radius_m)
@@ -484,8 +518,12 @@ if est_mode == '自動估算':
     motor_spec, base_speed, T_peak = estimate_motor_from_power(manual_max_power, voltage, n_max_motor, motor_eff, base_speed=3000)
     max_power_kw_used = manual_max_power
 else:
+    # 這裡的 manual_peak_torque 如果是讀取 TN 曲線，會自動帶入剛剛從 CSV 解析出來的最大值
     motor_spec, base_speed, T_peak = estimate_motor_from_params(manual_max_power, manual_peak_torque, voltage, n_max_motor, motor_eff)
     max_power_kw_used = manual_max_power
+    if est_mode == '讀取馬達TN曲線' and custom_tn_df is not None:
+         base_speed = custom_tn_df.loc[custom_tn_df['power_kw'].idxmax(), 'rpm']
+         motor_spec['基速 (rpm)'] = base_speed
 
 rated_power = max_power_kw_used / 2
 
@@ -507,21 +545,29 @@ T_motor_start_full = (F_roll_start + F_accel_full) * wheel_radius_m / (gear_rati
 F_accel_50 = total_mass * avg_accel_50
 T_motor_start_50 = (F_roll_start + F_accel_50) * wheel_radius_m / (gear_ratio * ETA_DRIVE)
 
+
 n = np.linspace(0, n_max_motor * 1.1, 500)
 T_motor_max = np.zeros_like(n)
 P_motor_out = np.zeros_like(n)
 
-const_idx = n <= base_speed
-T_motor_max[const_idx] = T_peak
-P_motor_out[const_idx] = T_peak * n[const_idx] / 9550
+if est_mode == '讀取馬達TN曲線' and custom_tn_df is not None:
+    # 模式 A：使用使用者上傳的 CSV 數據進行線性插值
+    T_motor_max = np.interp(n, custom_tn_df['rpm'].values, custom_tn_df['torque'].values, right=0)
+    P_motor_out = T_motor_max * n / 9550.0
+else:
+    # 模式 B：使用原本的公式生成標準雙區段曲線
+    const_idx = n <= base_speed
+    T_motor_max[const_idx] = T_peak
+    P_motor_out[const_idx] = T_peak * n[const_idx] / 9550
 
-power_idx = (n > base_speed) & (n <= n_max_motor)
-T_motor_max[power_idx] = (max_power_kw_used * 1000) / (2 * math.pi * n[power_idx] / 60)
-P_motor_out[power_idx] = max_power_kw_used
+    power_idx = (n > base_speed) & (n <= n_max_motor)
+    T_motor_max[power_idx] = (max_power_kw_used * 1000) / (2 * math.pi * n[power_idx] / 60)
+    P_motor_out[power_idx] = max_power_kw_used
 
-over_idx = n > n_max_motor
-T_motor_max[over_idx] = 0
-P_motor_out[over_idx] = 0
+    over_idx = n > n_max_motor
+    T_motor_max[over_idx] = 0
+    P_motor_out[over_idx] = 0
+
 
 v_from_n = n / gear_ratio * (2 * math.pi * wheel_radius_m) * 3.6 / 60
 T_wheel_max = T_motor_max * gear_ratio * ETA_DRIVE
@@ -544,8 +590,10 @@ T_wheel_climb = force_climb * wheel_radius_m if grade_percent > 0 else None
 
 time_acc, speed_acc, disp_acc = simulate_acceleration(
     total_mass, area, cd, fr, wheel_radius_m, gear_ratio,
-    motor_spec, base_speed, T_peak, speed_ms, dt=0.1
+    motor_spec, base_speed, T_peak, speed_ms, dt=0.1,
+    custom_tn_df=custom_tn_df
 )
+
 actual_0to50 = time_acc[np.argmax(speed_acc >= 50)] if np.any(speed_acc >= 50) else np.inf
 actual_full_time = time_acc[np.argmax(speed_acc >= speed_kmh * 0.99)] if np.any(speed_acc >= speed_kmh * 0.99) else np.inf
 
@@ -679,7 +727,7 @@ st.caption("淡藍色實線為馬達最大扭矩，紅色虛線為平路負載�
 x_upper = n_max_motor * 1.1
 
 # 精確計算網格間距 (只留上方一格)
-grid_step = T_peak / 4.0
+grid_step = T_peak / 4.0 if T_peak > 0 else 10
 y_min_raw = min(0, T_motor_max.min(), torque_flat.min())
 
 if "df_motor_operating_points" in st.session_state:
@@ -698,10 +746,9 @@ ratio = max_power_kw_used / T_peak if T_peak > 0 else 1
 p_min = y_min_torque * ratio
 p_max = y_max_torque * ratio
 
-import numpy as np
 num_ticks = int(round((y_max_torque - y_min_torque) / grid_step)) + 1
 all_y_ticks = [y_min_torque + i * grid_step for i in range(num_ticks)]
-clean_y_ticks = [v for v in all_y_ticks if abs(v - T_peak) > 0.01]
+clean_y_ticks = [v for v in all_y_ticks if abs(v - T_peak) > (grid_step*0.1)]
 y_ticks = [round(v, 2) for v in clean_y_ticks]
 p_ticks = [round(v * ratio, 2) for v in y_ticks]
 
@@ -734,14 +781,12 @@ fig1.add_trace(go.Scatter(x=[design_rpm], y=[T_at_design], mode='markers', name=
 intersections_flat = find_intersection(n, T_motor_max, motor_rpm_flat, torque_flat)
 for i, (x_cross, y_cross) in enumerate(intersections_flat):
     fig1.add_trace(go.Scatter(x=[x_cross], y=[y_cross], mode='markers', name='平路交點' if i==0 else None, marker=dict(color='red', size=12, symbol='x'), showlegend=(i==0)), secondary_y=False)
-    # 平路交點數值：強制往「右下方 (ax>0, ay>0)」拉出
     fig1.add_annotation(x=x_cross, y=y_cross, text=f'{x_cross:.0f} rpm<br>{y_cross:.1f} Nm', showarrow=True, arrowhead=2, ax=45, ay=40, font=dict(size=11, color="white"), bgcolor="rgba(255,0,0,0.4)", bordercolor="red", borderwidth=1)
 
 if motor_rpm_climb is not None:
     intersections_climb = find_intersection(n, T_motor_max, motor_rpm_climb, torque_climb)
     for i, (x_cross, y_cross) in enumerate(intersections_climb):
         fig1.add_trace(go.Scatter(x=[x_cross], y=[y_cross], mode='markers', name='爬坡交點' if i==0 else None, marker=dict(color='green', size=12, symbol='x'), showlegend=(i==0)), secondary_y=False)
-        # 爬坡交點數值：強制往「左上方 (ax<0, ay<0)」拉出
         fig1.add_annotation(x=x_cross, y=y_cross, text=f'{x_cross:.0f} rpm<br>{y_cross:.1f} Nm', showarrow=True, arrowhead=2, ax=-45, ay=-40, font=dict(size=11, color="white"), bgcolor="rgba(0,128,0,0.4)", bordercolor="green", borderwidth=1)
 
 
@@ -756,31 +801,17 @@ fig1.update_yaxes(title_text="功率 (kW)", secondary_y=True, range=[p_min, p_ma
 fig1.update_xaxes(title_text="轉速 (rpm)", range=[0, x_upper], tickvals=x_ticks, tickfont=dict(color='white'), zeroline=True, zerolinecolor='gray', zerolinewidth=1.5)
 
 
-# ================= 最上層獨立標籤 (錯開防重疊設計) =================
-
-# 1. 左側 Y軸 最大扭力
+# ================= 最上層獨立標籤 =================
 fig1.add_annotation(x=0, y=T_peak, xref="paper", yref="y", text=f"<b>{T_peak:.1f}</b>", showarrow=False, xanchor="right", xshift=-15, font=dict(color="dodgerblue", size=14), bgcolor="rgba(26,28,35,0.9)", bordercolor="dodgerblue", borderwidth=1, borderpad=4)
-
-# 2. 右側 Y2軸 最大功率
 fig1.add_annotation(x=1, y=max_power_kw_used, xref="paper", yref="y2", text=f"<b>{max_power_kw_used:.2f}</b>", showarrow=False, xanchor="left", xshift=15, font=dict(color="gold", size=14), bgcolor="rgba(26,28,35,0.9)", bordercolor="gold", borderwidth=1, borderpad=4)
-
-# 3. 基速點標籤 - 箭頭往「正上方」拉出
 fig1.add_annotation(x=base_speed, y=T_peak, xref="x", yref="y", text=f"<b>基速: {base_speed:.0f} rpm</b>", showarrow=True, arrowhead=2, arrowcolor="green", arrowsize=1, arrowwidth=2, ax=0, ay=-40, font=dict(color="lightgreen", size=12), bgcolor="rgba(26,28,35,0.9)", bordercolor="green", borderwidth=1, borderpad=3)
-
-# 4. 目標車速轉速標籤 - 箭頭往「右上方」拉高，避開基速
 fig1.add_annotation(x=design_rpm, y=T_at_design, xref="x", yref="y", text=f"<b>目標: {design_rpm:.0f} rpm</b>", showarrow=True, arrowhead=2, arrowcolor="orange", arrowsize=1, arrowwidth=2, ax=45, ay=-70, font=dict(color="orange", size=12), bgcolor="rgba(26,28,35,0.9)", bordercolor="orange", borderwidth=1, borderpad=3)
-
-# 5. 最高轉速點標籤 - 箭頭往「左上方」拉出，避免超出圖表右界
 fig1.add_annotation(x=n_max_motor, y=T_at_max_n, xref="x", yref="y", text=f"<b>極速: {n_max_motor:.0f} rpm<br>{T_at_max_n:.1f} Nm</b>", showarrow=True, arrowhead=2, arrowcolor="purple", arrowsize=1, arrowwidth=2, ax=-60, ay=-50, font=dict(color="#d8b4e2", size=12), bgcolor="rgba(26,28,35,0.9)", bordercolor="purple", borderwidth=1, borderpad=3)
 
-# ================= 更新版面 Margin =================
-# 加大上方 (t=90) 確保往上拉高的標籤不會被網頁切掉
 fig1.update_layout(legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5), margin=dict(l=80, r=80, t=90, b=20), height=550)
-
 st.plotly_chart(fig1, use_container_width=True)
 
 st.markdown("---")
-
 
 # ================== 圖2：車輪扭矩 vs 車速 + WLTC 工作點（含負扭矩）==================
 st.markdown("## 📈 圖2：車輪扭矩 vs 車速 + WLTC 工作點")
@@ -791,7 +822,7 @@ T_design_flat = T_wheel_flat[idx_design]
 T_at_vmax = np.interp(v_max_motor, v_from_n, T_wheel_max) if v_max_motor <= v_from_n.max() else 0
 T_wheel_peak = T_wheel_max.max()
 
-# ================= 精確計算網格間距 (只留上方一格) =================
+# ================= 精確計算網格間距 =================
 grid_step_wheel = T_wheel_peak / 4.0 if T_wheel_peak > 0 else 10
 y_min_raw_w = min(0, T_wheel_max.min(), T_wheel_flat.min())
 
@@ -808,7 +839,6 @@ if "df_motor_operating_points" in st.session_state:
     if not np.isnan(max_op_w) and max_op_w > y_max_wheel:
         y_max_wheel = math.ceil(max_op_w / grid_step_wheel) * grid_step_wheel
 
-# 準備刻度陣列
 num_ticks_w = int(round((y_max_wheel - y_min_wheel) / grid_step_wheel)) + 1
 all_y_ticks_w = [y_min_wheel + i * grid_step_wheel for i in range(num_ticks_w)]
 clean_y_ticks_w = [v for v in all_y_ticks_w if abs(v - T_wheel_peak) > (grid_step_wheel*0.1)]
@@ -822,23 +852,21 @@ fig2.add_trace(go.Scatter(x=speed_kmh_flat, y=T_wheel_flat, mode='lines', name='
 if T_wheel_climb is not None:
     fig2.add_trace(go.Scatter(x=speed_kmh_climb, y=T_wheel_climb, mode='lines', name=f'爬坡負載線 ({grade_percent}%)', line=dict(color='green', width=3, dash='dot')))
 
-# 標註關鍵點 (只留圓點，文字改用獨立標籤)
+# 標註關鍵點
 fig2.add_vline(x=speed_kmh, line_width=2, line_dash="dash", line_color="orange", opacity=0.9)
 fig2.add_trace(go.Scatter(x=[speed_kmh], y=[T_design_flat], mode='markers', name='目標最高車速', marker=dict(color='orange', size=10)))
 fig2.add_trace(go.Scatter(x=[v_max_motor], y=[T_at_vmax], mode='markers', name='馬達最高轉速對應車速', marker=dict(color='purple', size=10)))
 
-# ================= 交點標記與防重疊數值標籤 =================
+# 交點標記
 intersections_flat_wheel = find_intersection(v_from_n, T_wheel_max, speed_kmh_flat, T_wheel_flat)
 for i, (x_cross, y_cross) in enumerate(intersections_flat_wheel):
     fig2.add_trace(go.Scatter(x=[x_cross], y=[y_cross], mode='markers', name='平路交點' if i==0 else None, marker=dict(color='red', size=12, symbol='x'), showlegend=(i==0)))
-    # 平路交點數值：強制往「右下方 (ay=50)」拉出，避開上方
     fig2.add_annotation(x=x_cross, y=y_cross, text=f'{x_cross:.1f} km/h<br>{y_cross:.1f} Nm', showarrow=True, arrowhead=2, ax=55, ay=50, font=dict(size=11, color="white"), bgcolor="rgba(255,0,0,0.4)", bordercolor="red", borderwidth=1)
 
 if T_wheel_climb is not None:
     intersections_climb_wheel = find_intersection(v_from_n, T_wheel_max, speed_kmh_climb, T_wheel_climb)
     for i, (x_cross, y_cross) in enumerate(intersections_climb_wheel):
         fig2.add_trace(go.Scatter(x=[x_cross], y=[y_cross], mode='markers', name='爬坡交點' if i==0 else None, marker=dict(color='green', size=12, symbol='x'), showlegend=(i==0)))
-        # 爬坡交點數值：強制往「左下方 (ay=50)」拉出，避開上方
         fig2.add_annotation(x=x_cross, y=y_cross, text=f'{x_cross:.1f} km/h<br>{y_cross:.1f} Nm', showarrow=True, arrowhead=2, ax=-55, ay=50, font=dict(size=11, color="white"), bgcolor="rgba(0,128,0,0.4)", bordercolor="green", borderwidth=1)
 
 # WLTC 工作點
@@ -851,25 +879,15 @@ if x_max <= 0: x_max = 100
 fig2.update_yaxes(title_text="車輪扭矩 (Nm)", range=[y_min_wheel, y_max_wheel], tickvals=y_ticks_w, tickfont=dict(color='white'), zeroline=True, zerolinecolor='gray', zerolinewidth=1.5)
 fig2.update_xaxes(title_text="車速 (km/h)", range=[0, x_max], tickfont=dict(color='white'), zeroline=True, zerolinecolor='gray', zerolinewidth=1.5)
 
-# ================= 最上層獨立標籤 (向外擴散防重疊設計) =================
-
-# 1. 左側 Y軸 最大車輪扭矩
+# ================= 最上層獨立標籤 =================
 fig2.add_annotation(x=0, y=T_wheel_peak, xref="x", yref="y", text=f"<b>{T_wheel_peak:.1f}</b>", showarrow=False, xanchor="right", xshift=-15, font=dict(color="dodgerblue", size=14), bgcolor="rgba(26,28,35,0.9)", bordercolor="dodgerblue", borderwidth=1, borderpad=4)
-
-# 2. 目標車速標籤 - 往「左上方 (ax=-50, ay=-65)」拉高，主動避開右側的極速標籤
 fig2.add_annotation(x=speed_kmh, y=T_design_flat, xref="x", yref="y", text=f"<b>目標: {speed_kmh:.0f} km/h</b>", showarrow=True, arrowhead=2, arrowcolor="orange", arrowsize=1, arrowwidth=2, ax=-50, ay=-65, font=dict(color="orange", size=12), bgcolor="rgba(26,28,35,0.9)", bordercolor="orange", borderwidth=1, borderpad=3)
-
-# 3. 馬達極限車速標籤 - 往「右上方 (ax=60, ay=-45)」拉出，利用右側的空白區域
 fig2.add_annotation(x=v_max_motor, y=T_at_vmax, xref="x", yref="y", text=f"<b>極速: {v_max_motor:.0f} km/h<br>{T_at_vmax:.1f} Nm</b>", showarrow=True, arrowhead=2, arrowcolor="purple", arrowsize=1, arrowwidth=2, ax=60, ay=-45, font=dict(color="#d8b4e2", size=12), bgcolor="rgba(26,28,35,0.9)", bordercolor="purple", borderwidth=1, borderpad=3)
 
-# ================= 更新版面 Margin =================
-# 加大右側 (r=110) 與上方 (t=100) 的空間，確保往外推的標籤有足夠空間顯示
 fig2.update_layout(legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5), margin=dict(l=80, r=110, t=100, b=20), height=550)
-
 st.plotly_chart(fig2, use_container_width=True)
 
 st.markdown("---")
-
 
 # ================== 圖3：速度與位移 vs 時間 ==================
 st.markdown("## 📈 圖3：加速性能（速度與位移 vs 時間）")
