@@ -379,28 +379,40 @@ with st.sidebar:
             
             if tn_file is not None:
                 try:
+                    # 1. 讀取整個 CSV
                     df_tn = pd.read_csv(tn_file)
-                    st.success("成功讀取 TN 曲線資料")
-                    rpm_col = st.selectbox("請選擇 轉速(rpm) 欄位", df_tn.columns, index=0)
-                    t_col = st.selectbox("請選擇 扭矩(Nm) 欄位", df_tn.columns, index=1 if len(df_tn.columns) > 1 else 0)
+                    st.success("成功讀取多重 TN 曲線檔案")
                     
-                    df_tn = df_tn.sort_values(by=rpm_col).dropna(subset=[rpm_col, t_col])
-                    custom_tn_df = df_tn[[rpm_col, t_col]].copy()
-                    custom_tn_df.columns = ['rpm', 'torque']
+                    # 2. 讓使用者選擇「轉速」是哪一欄 (預設第 1 欄)
+                    rpm_col = st.selectbox("👉 選擇轉速 (X軸) 欄位", df_tn.columns, index=0)
                     
-                    # 計算各點功率 (kW) = T * rpm / 9550
-                    custom_tn_df['power_kw'] = custom_tn_df['torque'] * custom_tn_df['rpm'] / 9550.0
+                    # 3. 過濾掉轉速欄位，列出所有可用的「扭力曲線」供選擇
+                    available_torque_curves = [col for col in df_tn.columns if col != rpm_col]
                     
-                    # 從資料中自動提取極限值
-                    manual_max_rpm = custom_tn_df['rpm'].max()
-                    manual_peak_torque = custom_tn_df['torque'].max()
-                    manual_max_power = custom_tn_df['power_kw'].max()
-                    
-                    # 估算基速點 (功率達到最大的那個轉速)
-                    base_speed_idx = custom_tn_df['power_kw'].idxmax()
-                    base_speed_calc = custom_tn_df.loc[base_speed_idx, 'rpm']
-                    
-                    st.info(f"📊 解析結果：最大扭矩 **{manual_peak_torque:.1f} Nm**, 最高轉速 **{manual_max_rpm:.0f} rpm**, 最大功率 **{manual_max_power:.2f} kW**")
+                    if not available_torque_curves:
+                        st.error("檔案中除了轉速外，找不到其他的扭力數據欄位！")
+                    else:
+                        # 4. 讓使用者決定「這次模擬要用哪一條曲線」
+                        t_col = st.selectbox("👉 選擇本次模擬使用的扭力曲線", available_torque_curves, index=0)
+                        
+                        # 5. 抓出這兩欄來建立本次運算專用的 DataFrame
+                        df_tn_active = df_tn.sort_values(by=rpm_col).dropna(subset=[rpm_col, t_col])
+                        custom_tn_df = df_tn_active[[rpm_col, t_col]].copy()
+                        custom_tn_df.columns = ['rpm', 'torque']
+                        
+                        # 6. 計算各點功率 (kW) = T * rpm / 9550
+                        custom_tn_df['power_kw'] = custom_tn_df['torque'] * custom_tn_df['rpm'] / 9550.0
+                        
+                        # 從資料中自動提取極限值
+                        manual_max_rpm = custom_tn_df['rpm'].max()
+                        manual_peak_torque = custom_tn_df['torque'].max()
+                        manual_max_power = custom_tn_df['power_kw'].max()
+                        
+                        # 估算基速點 (功率達到最大的那個轉速)
+                        base_speed_idx = custom_tn_df['power_kw'].idxmax()
+                        base_speed_calc = custom_tn_df.loc[base_speed_idx, 'rpm']
+                        
+                        st.info(f"📊 目前載入 [**{t_col}**]：\n最大扭矩 **{manual_peak_torque:.1f} Nm**, 最高轉速 **{manual_max_rpm:.0f} rpm**, 最大功率 **{manual_max_power:.2f} kW**")
                 except Exception as e:
                     st.error(f"解析檔案失敗: {e}")
 
