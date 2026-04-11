@@ -1,3 +1,14 @@
+
+
+import streamlit as st
+import pandas as pd
+import numpy as np
+import math
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+from io import BytesIO
+
+
 st.markdown("""
 <details>
 <summary>📜 版本歷史記錄</summary>
@@ -37,13 +48,6 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 
-import streamlit as st
-import pandas as pd
-import numpy as np
-import math
-import plotly.graph_objects as go
-from plotly.subplots import make_subplots
-from io import BytesIO
 
 # ================== 常數與預設參數 ==================
 G = 9.81
