@@ -893,8 +893,27 @@ fig2.update_xaxes(title_text="車速 (km/h)", range=[0, x_max], tickfont=dict(co
 
 # ================= 最上層獨立標籤 =================
 fig2.add_annotation(x=0, y=T_wheel_peak, xref="x", yref="y", text=f"<b>{T_wheel_peak:.1f}</b>", showarrow=False, xanchor="right", xshift=-15, font=dict(color="dodgerblue", size=14), bgcolor="rgba(26,28,35,0.9)", bordercolor="dodgerblue", borderwidth=1, borderpad=4)
-fig2.add_annotation(x=speed_kmh, y=T_design_flat, xref="x", yref="y", text=f"<b>目標: {speed_kmh:.0f} km/h</b>", showarrow=True, arrowhead=2, arrowcolor="orange", arrowsize=1, arrowwidth=2, ax=-50, ay=-65, font=dict(color="orange", size=12), bgcolor="rgba(26,28,35,0.9)", bordercolor="orange", borderwidth=1, borderpad=3)
-fig2.add_annotation(x=v_max_motor, y=T_at_vmax, xref="x", yref="y", text=f"<b>極速: {v_max_motor:.0f} km/h<br>{T_at_vmax:.1f} Nm</b>", showarrow=True, arrowhead=2, arrowcolor="purple", arrowsize=1, arrowwidth=2, ax=60, ay=-45, font=dict(color="#d8b4e2", size=12), bgcolor="rgba(26,28,35,0.9)", bordercolor="purple", borderwidth=1, borderpad=3)
+
+# ================= 最上層獨立標籤 (優化防交叉排版) =================
+fig2.add_annotation(x=0, y=T_wheel_peak, xref="x", yref="y", text=f"<b>{T_wheel_peak:.1f}</b>", showarrow=False, xanchor="right", xshift=-15, font=dict(color="dodgerblue", size=14), bgcolor="rgba(26,28,35,0.9)", bordercolor="dodgerblue", borderwidth=1, borderpad=4)
+
+# 【修改點 1】目標車速標籤：強制往「左上方」拉出 (ax 設為負值)
+fig2.add_annotation(
+    x=speed_kmh, y=T_design_flat, xref="x", yref="y", 
+    text=f"<b>目標: {speed_kmh:.0f} km/h</b>", 
+    showarrow=True, arrowhead=2, arrowcolor="orange", arrowsize=1, arrowwidth=2, 
+    ax=-55, ay=-65,  # 往左 (-55) 往上 (-65)
+    font=dict(color="orange", size=12), bgcolor="rgba(26,28,35,0.9)", bordercolor="orange", borderwidth=1, borderpad=3
+)
+
+# 【修改點 2】馬達極限車速標籤：強制往「右上方」拉出 (ax 設為正值)
+fig2.add_annotation(
+    x=v_max_motor, y=T_at_vmax, xref="x", yref="y", 
+    text=f"<b>極速: {v_max_motor:.0f} km/h<br>{T_at_vmax:.1f} Nm</b>", 
+    showarrow=True, arrowhead=2, arrowcolor="purple", arrowsize=1, arrowwidth=2, 
+    ax=65, ay=-45,   # 往右 (+65) 往上 (-45)
+    font=dict(color="#d8b4e2", size=12), bgcolor="rgba(26,28,35,0.9)", bordercolor="purple", borderwidth=1, borderpad=3
+)
 
 fig2.update_layout(legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5), margin=dict(l=80, r=110, t=100, b=20), height=550)
 st.plotly_chart(fig2, use_container_width=True)
