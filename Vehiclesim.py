@@ -813,15 +813,62 @@ fig1.update_yaxes(title_text="功率 (kW)", secondary_y=True, range=[p_min, p_ma
 fig1.update_xaxes(title_text="轉速 (rpm)", range=[0, x_upper], tickvals=x_ticks, tickfont=dict(color='white'), zeroline=True, zerolinecolor='gray', zerolinewidth=1.5)
 
 
-# ================= 最上層獨立標籤 =================
-fig1.add_annotation(x=0, y=T_peak, xref="paper", yref="y", text=f"<b>{T_peak:.1f}</b>", showarrow=False, xanchor="right", xshift=-15, font=dict(color="dodgerblue", size=14), bgcolor="rgba(26,28,35,0.9)", bordercolor="dodgerblue", borderwidth=1, borderpad=4)
-fig1.add_annotation(x=1, y=max_power_kw_used, xref="paper", yref="y2", text=f"<b>{max_power_kw_used:.2f}</b>", showarrow=False, xanchor="left", xshift=15, font=dict(color="gold", size=14), bgcolor="rgba(26,28,35,0.9)", bordercolor="gold", borderwidth=1, borderpad=4)
-fig1.add_annotation(x=base_speed, y=T_peak, xref="x", yref="y", text=f"<b>基速: {base_speed:.0f} rpm</b>", showarrow=True, arrowhead=2, arrowcolor="green", arrowsize=1, arrowwidth=2, ax=0, ay=-40, font=dict(color="lightgreen", size=12), bgcolor="rgba(26,28,35,0.9)", bordercolor="green", borderwidth=1, borderpad=3)
-fig1.add_annotation(x=design_rpm, y=T_at_design, xref="x", yref="y", text=f"<b>目標: {design_rpm:.0f} rpm</b>", showarrow=True, arrowhead=2, arrowcolor="orange", arrowsize=1, arrowwidth=2, ax=45, ay=-70, font=dict(color="orange", size=12), bgcolor="rgba(26,28,35,0.9)", bordercolor="orange", borderwidth=1, borderpad=3)
-fig1.add_annotation(x=n_max_motor, y=T_at_max_n, xref="x", yref="y", text=f"<b>極速: {n_max_motor:.0f} rpm<br>{T_at_max_n:.1f} Nm</b>", showarrow=True, arrowhead=2, arrowcolor="purple", arrowsize=1, arrowwidth=2, ax=-60, ay=-50, font=dict(color="#d8b4e2", size=12), bgcolor="rgba(26,28,35,0.9)", bordercolor="purple", borderwidth=1, borderpad=3)
+# ================= 最上層獨立標籤 (向外擴散防重疊設計) =================
 
-fig1.update_layout(legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5), margin=dict(l=80, r=80, t=90, b=20), height=550)
+# 1. 左側 Y軸 最大扭力
+fig1.add_annotation(
+    x=0, y=T_peak, xref="paper", yref="y", 
+    text=f"<b>{T_peak:.1f}</b>", 
+    showarrow=False, xanchor="right", xshift=-15, 
+    font=dict(color="dodgerblue", size=14), 
+    bgcolor="rgba(26,28,35,0.9)", bordercolor="dodgerblue", borderwidth=1, borderpad=4
+)
+
+# 2. 右側 Y2軸 最大功率
+fig1.add_annotation(
+    x=1, y=max_power_kw_used, xref="paper", yref="y2", 
+    text=f"<b>{max_power_kw_used:.2f}</b>", 
+    showarrow=False, xanchor="left", xshift=15, 
+    font=dict(color="gold", size=14), 
+    bgcolor="rgba(26,28,35,0.9)", bordercolor="gold", borderwidth=1, borderpad=4
+)
+
+# 3. 基速點標籤 - 箭頭往「正上方」拉出
+fig1.add_annotation(
+    x=base_speed, y=T_peak, xref="x", yref="y", 
+    text=f"<b>基速: {base_speed:.0f} rpm</b>", 
+    showarrow=True, arrowhead=2, arrowcolor="green", arrowsize=1, arrowwidth=2, 
+    ax=0, ay=-45, 
+    font=dict(color="lightgreen", size=12), 
+    bgcolor="rgba(26,28,35,0.9)", bordercolor="green", borderwidth=1, borderpad=3
+)
+
+# 4. 目標車速轉速標籤 - 往「左上方 (ax=-50, ay=-70)」拉高，主動避開右側的極速標籤
+fig1.add_annotation(
+    x=design_rpm, y=T_at_design, xref="x", yref="y", 
+    text=f"<b>目標: {design_rpm:.0f} rpm</b>", 
+    showarrow=True, arrowhead=2, arrowcolor="orange", arrowsize=1, arrowwidth=2, 
+    ax=-50, ay=-70, 
+    font=dict(color="orange", size=12), 
+    bgcolor="rgba(26,28,35,0.9)", bordercolor="orange", borderwidth=1, borderpad=3
+)
+
+# 5. 最高轉速點標籤 - 往「右上方 (ax=60, ay=-45)」拉出，利用右側的空白區域
+fig1.add_annotation(
+    x=n_max_motor, y=T_at_max_n, xref="x", yref="y", 
+    text=f"<b>極速: {n_max_motor:.0f} rpm<br>{T_at_max_n:.1f} Nm</b>", 
+    showarrow=True, arrowhead=2, arrowcolor="purple", arrowsize=1, arrowwidth=2, 
+    ax=60, ay=-45, 
+    font=dict(color="#d8b4e2", size=12), 
+    bgcolor="rgba(26,28,35,0.9)", bordercolor="purple", borderwidth=1, borderpad=3
+)
+
+# ================= 更新版面 Margin =================
+# 加大右側 (r=110) 與上方 (t=100) 的空間，確保往外推的標籤有足夠空間顯示
+fig1.update_layout(legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5), margin=dict(l=80, r=110, t=100, b=20), height=550)
+
 st.plotly_chart(fig1, use_container_width=True)
+
 
 st.markdown("---")
 
