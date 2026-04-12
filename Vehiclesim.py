@@ -19,16 +19,12 @@ st.markdown("""
 <details>
 <summary>📜 版本歷史記錄</summary>
 
-**v2.4 (2026-04-12)**
-- 修正 `np.gradient` 計算加速度的致命 Bug。
-- 優化圖5「理論能耗計算」：正式納入齒輪與馬達效率損耗。
+**v2.2 (2026-04-12) - 終極穩定與能耗校準版**
+- 修正 `np.gradient` 導致舊版 SciPy 當機的問題，全面改用相容性最高的 `np.trapz` 與防彈加速度函數。
+- 引入強制型別轉換 `pd.to_numeric`，防止上傳的 CSV 夾帶字串導致數學運算崩潰。
+- 新增圖5「理論能耗計算」：正式納入齒輪與馬達效率損耗。
 - 區分「輪上能耗」與「電池端理論能耗 (對應論文)」，並獨立拆解動能回收數據。
-
-**v2.3 (2026-04-12)**
-- 新增「理論能耗計算」模組與圖5。
-
-**v2.2 (2026-04-12)**
-- 新增圖4：行駛工況車速與加速度 vs 時間。
+- 里程估算與行駛工況積分模組深度整合，獨立顯示可用能量 (Wh) 與理論預估里程 (km)。
 
 **v2.1 (2026-04-11)**
 - 新增「讀取馬達TN曲線」模式。
@@ -365,7 +361,7 @@ def render_battery_with_diff(battery_spec, default_battery_spec):
         '標稱電壓 (V)': '電池組的額定電壓，由串聯電池芯數決定（每芯 3.7V）。',
         '容量 (Ah)': '電池組的總電荷容量，並聯電池芯數 × 單芯容量 (2.5Ah)。',
         '能量 (kWh)': '電池組儲存的總電能 = 電壓 × 容量 / 1000。',
-        '放電倍率 (C)': '表示電池持續放電電流相對於容量的倍率，1C 代表可持續 1 小時放完電。',
+        '放電倍率 (C)': '表示電池持續放電電流相對於容量的倍率，1C 代表可持续 1 小時放完電。',
         '串聯數': f'將多顆電池芯串聯以提高電壓。例如 {battery_spec["串聯數"]} 串 × 3.7V ≈ {battery_spec["串聯數"]*3.7:.0f}V。',
         '並聯數': '將多組串聯電池並聯以提高容量。總容量 = 並聯數 × 單芯容量 (2.5Ah)。',
         '估計重量 (kg)': '基於能量密度 150 Wh/kg 估算的電池組重量。'
@@ -533,12 +529,6 @@ with st.sidebar:
         battery_soc = st.number_input("電池可用 SOC (%)", min_value=0.0, max_value=100.0, value=90.0, step=5.0,
                                       help="State of Charge，剩餘電量百分比，通常為避免深度放電而保留部分電量。")
 
-    st.header("📊 里程估計參數")
-    avg_speed_ratio = st.slider("平均車速 / 最高車速 比例", min_value=0.3, max_value=1.0, value=0.7, step=0.05,
-                                help="估計里程時使用的平均車速佔最高車速的比例")
-    avg_speed_kmh = speed_kmh * avg_speed_ratio
-    st.caption(f"計算平均車速: {avg_speed_kmh:.1f} km/h")
-
     # ---------- 行駛工況設定 ----------
     st.header("📁 行駛工況設定")
     st.markdown("上傳 **行駛工況 CSV**（需含時間(s)、車速(km/h)；若無加速度欄位，系統將自動計算）")
@@ -593,19 +583,6 @@ with st.sidebar:
             del st.session_state.df_wltc_clean
             del st.session_state.df_motor_operating_points
 
-    # 簡易預估計算...
-    cd_preview = cd
-    fr_preview = fr
-    avg_speed_ms_preview = avg_speed_kmh / 3.6
-    F_roll_preview = total_mass * G * fr_preview
-    F_air_preview = 0.5 * RHO * cd_preview * area * avg_speed_ms_preview**2
-    F_total_preview = F_roll_preview + F_air_preview
-    P_wheel_preview = F_total_preview * avg_speed_ms_preview / 1000
-    P_batt_preview = P_wheel_preview / (gear_eff/100) / (motor_eff/100)
-    usable_energy_preview = user_battery_energy_kwh * (battery_soc / 100)
-    hours_preview = usable_energy_preview / P_batt_preview if P_batt_preview > 0 else 0
-    range_preview = avg_speed_kmh * hours_preview
-    st.metric("即時估計里程", f"{range_preview:.1f} km")
     st.markdown("---")
     st.caption("修改參數後，下方結果會自動更新")
 
@@ -860,8 +837,8 @@ if "df_wltc_clean" in st.session_state:
 
 # ================== 圖5：理論能耗分析 (核心精準版) ==================
 if "df_wltc_clean" in st.session_state and SCIPY_AVAILABLE:
-    st.markdown("## 📈 圖5：理論能耗分析 (含傳動與馬達效率)")
-    st.caption("基於行駛工況與物理阻力，並帶入**齒輪箱與馬達效率損耗**計算出的「電池端理論能耗」，可直接與論文中的 Theoretical Energy Consumption 進行對比。")
+    st.markdown("## 📈 圖5：理論能耗分析與里程預估 (含損耗對齊)")
+    st.caption("本模組基於行駛工況積分計算能耗，並根據側邊欄設定的**電池容量與 SOC** 進行續航里程預估。")
     
     df_energy = st.session_state.df_wltc_clean.copy()
     
@@ -873,18 +850,20 @@ if "df_wltc_clean" in st.session_state and SCIPY_AVAILABLE:
         df_energy, total_mass, area, cd, fr, gear_eff_val, motor_eff_val
     )
     
+    usable_energy_wh = user_battery_energy_kwh * 1000 * (battery_soc / 100.0)
+    estimated_range_km = usable_energy_wh / wh_per_km_batt if wh_per_km_batt > 0 else 0
+    
     # 建立 5 欄顯示詳細對比數值
-    col1, col2, col3 = st.columns(3)
-    col1.metric("🏁 總行駛距離", f"{total_dist_km:.3f} km")
-    col2.metric("⚙️ 輪上淨能耗 (純物理)", f"{wh_per_km_wheel:.2f} Wh/km")
-    col3.metric("🔋 電池端理論能耗 (對應論文)", f"{wh_per_km_batt:.2f} Wh/km")
+    c1, c2, c3 = st.columns(3)
+    c1.metric("🏁 工況總里程", f"{total_dist_km:.3f} km")
+    c2.metric("⚙️ 輪上淨能耗 (純物理)", f"{wh_per_km_wheel:.2f} Wh/km")
+    c3.metric("🔋 電池端理論能耗 (對應論文)", f"{wh_per_km_batt:.2f} Wh/km")
     
-    st.markdown("") # 排版間距
-    
-    col4, col5, col6 = st.columns(3)
-    col4.metric("📈 驅動耗電 (電池端)", f"{drive_energy_wh:.2f} Wh")
-    col5.metric("📉 回收充電 (電池端)", f"{regen_energy_wh:.2f} Wh")
-    col6.metric("⚡ 總淨耗電 (電池端)", f"{total_energy_wh:.2f} Wh")
+    st.markdown("#### 🔋 續航里程估算結果")
+    cc1, cc2, cc3 = st.columns(3)
+    cc1.metric("⚡ 可用總能量", f"{usable_energy_wh:.1f} Wh")
+    cc2.metric("🎯 理論預估里程", f"{estimated_range_km:.1f} km", delta=f"基於 {user_battery_energy_kwh:.1f}kWh 電池")
+    cc3.metric("📈 驅動耗電 (電池端)", f"{drive_energy_wh:.1f} Wh")
     
     # 繪製電池端瞬時功率與累積能量
     fig5 = make_subplots(specs=[[{"secondary_y": True}]])
@@ -903,5 +882,3 @@ if "df_wltc_clean" in st.session_state and SCIPY_AVAILABLE:
     fig5.update_yaxes(title_text="累積耗電 (Wh)", secondary_y=True, zeroline=False)
     fig5.update_layout(height=450, margin=dict(l=20, r=20, t=40, b=20), legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5))
     st.plotly_chart(fig5, use_container_width=True)
-    
-    st.info("💡 **工程洞察：** 論文中的實驗能耗 (如 34.2 Wh/km) 通常高於此處的「電池端理論能耗」，是因為現實中的動能回收 (Regen) 無法達到 100% 的理想效率，且有控制器的待機損耗。您可以透過調降側邊欄的馬達效率來模擬逼近實驗值。")
