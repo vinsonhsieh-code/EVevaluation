@@ -19,18 +19,15 @@ st.markdown("""
 <details>
 <summary>📜 版本歷史記錄</summary>
 
-**v2.6 (2026-04-12) - 穩定除錯版**
-- 拔除 `np.gradient`，改用自製防呆微積分函數，徹底解決因時間重複 (dt=0) 造成的當機。
-- 強制轉換所有 DataFrame 取出的極值為純量 (Float)，防止 TypeError。
-- 強化 Session State 的欄位安全檢查，避免 KeyError。
+**v2.7 (2026-04-12) - 終極穩定版**
+- 修正 `integrate.trapezoid` 導致舊版 SciPy 當機的問題，全面改用相容性最高的 `np.trapz`。
+- 引入強制型別轉換 `pd.to_numeric`，防止上傳的 CSV 夾帶字串導致數學運算崩潰。
+- 修復 TN 曲線極值抽取可能引發的 `Series` 型別衝突。
+- 加入效率為 0 的防除以零 (`ZeroDivisionError`) 防護。
 
 **v2.5 (2026-04-12)**
-- 移除舊版「平均速度比例」里程估算功能。
-- 將里程估算與行駛工況積分模組 (Fig 5) 深度整合，提供基於工況的精確里程預估。
-
-**v2.4 (2026-04-12)**
-- 優化圖5「理論能耗計算」：正式納入齒輪與馬達效率損耗。
-- 區分「輪上能耗」與「電池端理論能耗 (對應論文)」，並獨立拆解動能回收數據。
+- 里程估算與行駛工況積分模組深度整合。
+- 獨立顯示可用能量 (Wh) 與理論預估里程 (km)。
 </details>
 """, unsafe_allow_html=True)
 
@@ -50,9 +47,9 @@ CELL_CAPACITY = 2.5
 
 # ================== 輔助函數 (防彈計算) ==================
 def get_safe_accel(speeds_ms, times):
-    """ 安全計算加速度，避免 dt=0 導致除以零當機 """
+    """ 安全計算加速度，避免 dt=0 或 NaN 導致除以零當機 """
     dt = np.diff(times)
-    dt[dt <= 0] = 0.1  # 防禦機制：若時間差小於等於0，強制給一個微小值
+    dt[dt <= 0] = 0.01  # 防禦機制：若時間差小於等於0，強制給一個微小值
     dv = np.diff(speeds_ms)
     accels = np.zeros_like(times)
     accels[1:] = dv / dt
@@ -253,6 +250,9 @@ def compute_motor_operating_points_from_wltc(df_wltc, mass, area, cd, fr, wheel_
     motor_torque = np.zeros(n)
     wheel_torque = np.zeros(n)
     
+    # 避免傳動效率為 0 的致命錯誤
+    safe_gear_eff = max(gear_eff, 0.01)
+    
     for i in range(n):
         v_ms = speeds_kmh[i] / 3.6
         F_roll = F_roll_const
@@ -261,12 +261,8 @@ def compute_motor_operating_points_from_wltc(df_wltc, mass, area, cd, fr, wheel_
         F_tractive = F_roll + F_air + F_accel
         motor_rpm[i] = v_ms / wheel_circ * 60 * gear_ratio
         
-        if F_tractive >= 0:
-            motor_torque[i] = F_tractive * wheel_radius_m / (gear_ratio * gear_eff)
-        else:
-            motor_torque[i] = F_tractive * wheel_radius_m / (gear_ratio * gear_eff)
-            
-        wheel_torque[i] = motor_torque[i] * gear_ratio * gear_eff
+        motor_torque[i] = F_tractive * wheel_radius_m / (gear_ratio * safe_gear_eff)
+        wheel_torque[i] = motor_torque[i] * gear_ratio * safe_gear_eff
         
     result_df = pd.DataFrame({
         'time': times,
@@ -283,7 +279,6 @@ def compute_theoretical_energy_consumption(df_cycle, mass, area, cd, fr, gear_ef
     times = df_cycle['time'].values
     speeds_kmh = df_cycle['speed_kmh'].values
     
-    # 確保不會因為 Key 遺失而當機
     if 'accel_ms2' in df_cycle.columns:
         accels = df_cycle['accel_ms2'].values
     else:
@@ -291,15 +286,14 @@ def compute_theoretical_energy_consumption(df_cycle, mass, area, cd, fr, gear_ef
     
     speeds_ms = speeds_kmh / 3.6
     
-    # 1. 物理阻力計算 (輪上)
     F_roll = mass * G * fr
     F_aero = 0.5 * RHO * cd * area * speeds_ms**2
     F_acc = mass * accels
-    F_trac = F_roll + F_aero + F_acc   # 總牽引力 (N)
-    P_wheel = F_trac * speeds_ms       # 輪上淨功率 (W)
+    F_trac = F_roll + F_aero + F_acc
+    P_wheel = F_trac * speeds_ms
     
-    # 2. 轉換為電池端功率 (考慮效率)
-    eta_sys = (gear_eff_percent / 100.0) * (motor_eff_percent / 100.0)
+    # 強制安全下限，防止除以零
+    eta_sys = max((gear_eff_percent / 100.0) * (motor_eff_percent / 100.0), 0.01)
     P_batt = np.zeros_like(P_wheel)
     
     drive_mask = P_wheel >= 0
@@ -318,20 +312,16 @@ def compute_theoretical_energy_consumption(df_cycle, mass, area, cd, fr, gear_ef
             
         energy_wh_cumulative = cum_trapz_func(P_batt, times, initial=0) / 3600.0
         total_energy_wh = energy_wh_cumulative[-1]
-        
-        drive_energy_wh = integrate.trapezoid(P_drive_batt, times) / 3600.0
-        regen_energy_wh = integrate.trapezoid(P_regen_batt, times) / 3600.0
-        wheel_energy_wh = integrate.trapezoid(P_wheel, times) / 3600.0
-        distance_km = integrate.trapezoid(speeds_ms, times) / 1000.0
     else:
-        total_energy_wh = np.trapz(P_batt, times) / 3600.0
-        drive_energy_wh = np.trapz(P_drive_batt, times) / 3600.0
-        regen_energy_wh = np.trapz(P_regen_batt, times) / 3600.0
-        wheel_energy_wh = np.trapz(P_wheel, times) / 3600.0
-        distance_km = np.trapz(speeds_ms, times) / 1000.0
-        
         dt = np.diff(times, prepend=times[0])
         energy_wh_cumulative = np.cumsum(P_batt * dt) / 3600.0
+        total_energy_wh = np.trapz(P_batt, times) / 3600.0
+
+    # 全面改用 np.trapz 確保 100% 相容性
+    drive_energy_wh = np.trapz(P_drive_batt, times) / 3600.0
+    regen_energy_wh = np.trapz(P_regen_batt, times) / 3600.0
+    wheel_energy_wh = np.trapz(P_wheel, times) / 3600.0
+    distance_km = np.trapz(speeds_ms, times) / 1000.0
     
     wh_per_km_batt = float(total_energy_wh / distance_km) if distance_km > 0 else 0.0
     wh_per_km_wheel = float(wheel_energy_wh / distance_km) if distance_km > 0 else 0.0
@@ -467,25 +457,33 @@ with st.sidebar:
                         st.error("找不到其他的扭力數據欄位！")
                     else:
                         t_col = st.selectbox("👉 選擇本次模擬使用的扭力曲線", available_torque_curves, index=0)
-                        df_tn_active = df_tn.sort_values(by=rpm_col).dropna(subset=[rpm_col, t_col])
-                        custom_tn_df = df_tn_active[[rpm_col, t_col]].copy()
-                        custom_tn_df.columns = ['rpm', 'torque']
-                        custom_tn_df['power_kw'] = custom_tn_df['torque'] * custom_tn_df['rpm'] / 9550.0
                         
-                        # 安全轉型為 float
-                        manual_max_rpm = float(custom_tn_df['rpm'].max())
-                        manual_peak_torque = float(custom_tn_df['torque'].max())
-                        manual_max_power = float(custom_tn_df['power_kw'].max())
-                        st.info(f"📊 目前載入 [**{t_col}**]：\n最大扭矩 **{manual_peak_torque:.1f} Nm**, 最高轉速 **{manual_max_rpm:.0f} rpm**, 最大功率 **{manual_max_power:.2f} kW**")
+                        # 關鍵修復：強制將 CSV 資料轉為純數字，過濾可能夾帶的文字/單位
+                        df_tn_active = df_tn[[rpm_col, t_col]].copy()
+                        df_tn_active[rpm_col] = pd.to_numeric(df_tn_active[rpm_col], errors='coerce')
+                        df_tn_active[t_col] = pd.to_numeric(df_tn_active[t_col], errors='coerce')
+                        df_tn_active = df_tn_active.dropna().sort_values(by=rpm_col)
+                        
+                        if len(df_tn_active) < 2:
+                            st.error("有效的數值資料不足！請確保 CSV 內容為純數字。")
+                        else:
+                            custom_tn_df = df_tn_active.copy()
+                            custom_tn_df.columns = ['rpm', 'torque']
+                            custom_tn_df['power_kw'] = custom_tn_df['torque'] * custom_tn_df['rpm'] / 9550.0
+                            
+                            manual_max_rpm = float(custom_tn_df['rpm'].max())
+                            manual_peak_torque = float(custom_tn_df['torque'].max())
+                            manual_max_power = float(custom_tn_df['power_kw'].max())
+                            st.info(f"📊 目前載入 [**{t_col}**]：\n最大扭矩 **{manual_peak_torque:.1f} Nm**, 最高轉速 **{manual_max_rpm:.0f} rpm**, 最大功率 **{manual_max_power:.2f} kW**")
                 except Exception as e:
                     st.error(f"解析檔案失敗: {e}")
 
-        motor_eff = st.number_input("馬達效率 (%)", min_value=0.0, max_value=100.0, value=90.0, step=1.0)
+        motor_eff = st.number_input("馬達效率 (%)", min_value=1.0, max_value=100.0, value=90.0, step=1.0)
 
     with st.expander("🔹 齒輪 (Gear)", expanded=True):
         gear_option = st.radio("減速比", ['自動估算', '手動輸入'], index=1)
         gear_ratio = st.number_input("請輸入減速比", min_value=1.0, value=8.7, step=0.5) if gear_option == '手動輸入' else None
-        gear_eff = st.number_input("齒輪箱效率 (%)", min_value=0.0, max_value=100.0, value=95.0, step=1.0)
+        gear_eff = st.number_input("齒輪箱效率 (%)", min_value=1.0, max_value=100.0, value=95.0, step=1.0)
 
     with st.expander("🔹 電池 (Battery)", expanded=True):
         user_battery_energy_kwh = st.number_input("電池總能量 (kWh)", min_value=0.1, value=5.0, step=0.1)
@@ -502,24 +500,29 @@ with st.sidebar:
             time_col = st.selectbox("時間欄位 (秒)", df_wltc.columns, index=df_wltc.columns.get_loc(time_candidates[0]) if time_candidates else 0)
             speed_col = st.selectbox("車速欄位 (km/h)", df_wltc.columns, index=df_wltc.columns.get_loc(speed_candidates[0]) if speed_candidates else 1 if len(df_wltc.columns) > 1 else 0)
             
+            # 關鍵修復：強制轉數值並依時間排序
             df_wltc_clean = df_wltc[[time_col, speed_col]].copy()
             df_wltc_clean.columns = ['time', 'speed_kmh']
-            df_wltc_clean = df_wltc_clean.dropna()
+            df_wltc_clean['time'] = pd.to_numeric(df_wltc_clean['time'], errors='coerce')
+            df_wltc_clean['speed_kmh'] = pd.to_numeric(df_wltc_clean['speed_kmh'], errors='coerce')
+            df_wltc_clean = df_wltc_clean.dropna().sort_values(by='time')
 
-            # 採用防彈計算，徹底避免 ValueError 與 zero division
-            accel_col = next((col for col in df_wltc.columns if 'accel' in col.lower() or 'a' in col.lower()), None)
-            if accel_col is not None:
-                df_wltc_clean['accel_ms2'] = df_wltc[accel_col]
+            if len(df_wltc_clean) < 2:
+                st.error("行駛工況的有效資料不足！請確保 CSV 包含數值格式的時間與車速。")
             else:
-                df_wltc_clean['accel_ms2'] = get_safe_accel(df_wltc_clean['speed_kmh'].values / 3.6, df_wltc_clean['time'].values)
-            
-            st.session_state.df_wltc_raw = df_wltc
-            st.session_state.df_wltc_clean = df_wltc_clean
-            
-            gear_ratio_val = gear_ratio if gear_ratio is not None else estimate_gearbox(speed_ms, wheel_radius_m)
-            df_op = compute_motor_operating_points_from_wltc(df_wltc_clean, total_mass, area, cd, fr, wheel_radius_m, gear_ratio_val, gear_eff/100.0)
-            st.session_state.df_motor_operating_points = df_op
-            st.success("✅ 行駛工況已載入並完成計算")
+                accel_col = next((col for col in df_wltc.columns if 'accel' in col.lower() or 'a' in col.lower()), None)
+                if accel_col is not None:
+                    df_wltc_clean['accel_ms2'] = pd.to_numeric(df_wltc[accel_col], errors='coerce').fillna(0)
+                else:
+                    df_wltc_clean['accel_ms2'] = get_safe_accel(df_wltc_clean['speed_kmh'].values / 3.6, df_wltc_clean['time'].values)
+                
+                st.session_state.df_wltc_raw = df_wltc
+                st.session_state.df_wltc_clean = df_wltc_clean
+                
+                gear_ratio_val = gear_ratio if gear_ratio is not None else estimate_gearbox(speed_ms, wheel_radius_m)
+                df_op = compute_motor_operating_points_from_wltc(df_wltc_clean, total_mass, area, cd, fr, wheel_radius_m, gear_ratio_val, gear_eff/100.0)
+                st.session_state.df_motor_operating_points = df_op
+                st.success("✅ 行駛工況已載入並完成計算")
         except Exception as e:
             st.error(f"讀取檔案失敗: {e}")
 
@@ -545,9 +548,9 @@ else:
     motor_spec, base_speed, T_peak = estimate_motor_from_params(manual_max_power, manual_peak_torque, voltage, n_max_motor, motor_eff)
     max_power_kw_used = manual_max_power
     if est_mode == '讀取馬達TN曲線' and custom_tn_df is not None:
-         # 安全抽出純量值
-         base_speed_idx = custom_tn_df['power_kw'].idxmax()
-         base_speed = float(custom_tn_df.loc[base_speed_idx, 'rpm'])
+         # 關鍵修復：絕對安全的極值抽取 (防重複索引導致 Series 型別報錯)
+         base_speed_idx = custom_tn_df['power_kw'].argmax()
+         base_speed = float(custom_tn_df.iloc[base_speed_idx]['rpm'])
          motor_spec['基速 (rpm)'] = base_speed
 
 base_speed = float(base_speed)
@@ -622,7 +625,7 @@ with st.expander("🔁 轉換係數", expanded=False):
 
 st.markdown("---")
 
-# ================== 圖1：馬達 TN 曲線 + 功率曲線 + 工作點 ==================
+# ================== 圖1 / 圖2 (繪圖區) ==================
 st.markdown("## 📈 圖1：馬達 TN 曲線 + 功率曲線 + 工作點")
 x_upper = float(n_max_motor * 1.1)
 grid_step = float(T_peak / 4.0 if T_peak > 0 else 10)
@@ -710,8 +713,8 @@ if "df_wltc_clean" in st.session_state:
     st.plotly_chart(fig4, use_container_width=True)
     st.markdown("---")
 
-# ================== 圖5：理論能耗分析 & 里程估算 (核心更新) ==================
-if "df_wltc_clean" in st.session_state and SCIPY_AVAILABLE:
+# ================== 圖5：理論能耗分析 & 里程估算 ==================
+if "df_wltc_clean" in st.session_state:
     st.markdown("## 📈 圖5：理論能耗分析與里程預估 (含損耗對齊)")
     st.caption("本模組基於行駛工況積分計算能耗，並根據側邊欄設定的**電池容量與 SOC** 進行續航里程預估。")
     
@@ -744,8 +747,3 @@ if "df_wltc_clean" in st.session_state and SCIPY_AVAILABLE:
     
     fig5.update_layout(height=450, margin=dict(l=20, r=20, t=40, b=20), legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5))
     st.plotly_chart(fig5, use_container_width=True)
-    
-    st.info(f"💡 **里程估算說明**：此里程是根據載入的行駛工況，考慮了 Cd={cd}、fr={fr} 以及馬達/齒輪綜合效率後的精確推算。")
-
-elif "df_wltc_clean" in st.session_state and not SCIPY_AVAILABLE:
-    st.warning("⚠️ 未安裝 SciPy，里程預估功能僅能提供簡易參考。")
