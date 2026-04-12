@@ -1,5 +1,3 @@
-
-
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -8,45 +6,33 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from io import BytesIO
 
-
+# ================== 版本歷史記錄 ==================
 st.markdown("""
 <details>
 <summary>📜 版本歷史記錄</summary>
-# ⚡ 電動載具動力系統估算工具 - 版本歷史
 
-## v2.1 (2026-04-11)
-- **新增「讀取馬達TN曲線」模式**：支援上傳自訂轉速-扭矩 CSV 檔案，自動計算最大功率與基速，並應用於 TN 曲線繪製、加速模擬與 WLTC 工作點比對。
-- **加速模擬整合自訂曲線**：`simulate_acceleration` 函數支援線性插值自訂 TN 數據，更貼近實際馬達特性。
-- **圖表標籤防重疊優化**：圖1與圖2的交點數值標籤強制向外偏移（平路交點右下、爬坡交點左上/左下），避免與曲線重疊。
-- **Y軸刻度動態計算**：根據實際數據範圍自動計算網格間距，提升可讀性。
-- **修復變數作用域問題**：確保 `custom_tn_df` 在未上傳檔案時仍安全定義，避免 NameError。
+**v2.2 (2026-04-12)**
+- 新增「行駛工況：車速與加速度 vs 時間」圖（圖4），雙 Y 軸顯示車速與加速度關係。
+- 自動計算加速度：若上傳的 CSV 僅含時間與車速，系統會自動計算加速度（m/s²）。
 
-## v2.0 (2026-04-06)
-- **整合 WLTC 行駛工況分析**：支援上傳 WLTC CSV（時間、車速、加速度），計算馬達與車輪側需求工作點。
-- **負扭矩（再生煞車）顯示**：圖1、圖2的 Y 軸範圍動態包含負值，完整呈現 WLTC 工況中的回收區間。
-- **反向動力學計算**：基於車輛參數（質量、風阻、輪胎、減速比、齒輪效率）計算每個時間點的馬達轉速與扭矩。
-- **移除效率地圖依賴**：v2.0 專注於工況覆蓋分析，無需 scipy 與效率地圖 CSV。
+**v2.1 (2026-04-11)**
+- 新增「讀取馬達TN曲線」模式，支援上傳自訂轉速-扭力數據。
+- 加速模擬整合自訂曲線，圖表標籤防重疊優化，Y軸刻度動態計算。
 
-## v1.2 (2026-04-06)
-- **圖表標籤優化**：圖1「設計車速對應轉速」改為「目標最高車速對應馬達轉速(減速比=…)」；圖2「設計最高車速點」改為「目標最高車速」。
-- **負載線交點重新命名**：「平路交點」→「平路負載線交點」，「爬坡交點」→「爬坡負載線交點」。
-- **圖2 Y軸範圍調整**：僅根據最大車輪扭矩與平路負載線決定上限，避免爬坡需求過大導致比例失當。
+**v2.0 (2026-04-06)**
+- 整合 WLTC 行駛工況分析、負扭矩顯示、反向動力學計算。
 
-## v1.1 (2026-04-05)
-- **側邊欄介面重組**：將「輸入動力鍊規格」拆分為馬達、齒輪、電池三個可收合區塊。
-- **負載線延伸至馬達極速**：確保與 TN 曲線有交點，可讀取極速時扭矩。
-- **馬達規格數值高光改為淺藍色**：僅數值變化時變色（原為紅色）。
-- **新增行駛里程與期望續航比較**：以綠色/紅色標示滿足與否。
-- **爬坡規格加入角度換算**。
+**v1.2 (2026-04-06)**
+- 圖表標籤優化、負載線交點重新命名、圖2 Y軸範圍調整。
 
-## v1.0 (2026-02-19)
-- **初始版本**：實現車輛參數輸入、馬達/電池/控制器/齒輪箱規格估算。
-- **三張核心圖表**：馬達 TN 曲線 + 功率曲線、車輪扭矩 vs 車速、加速性能（速度與位移 vs 時間）。
-- **支援平路與爬坡負載線、加速目標對比、Excel 下載**。
-- **手機優化版面**：單欄垂直排列，圖例外移。
+**v1.1 (2026-04-05)**
+- 側邊欄介面重組、負載線延伸至馬達極速、數值高光改淺藍色、新增里程比較。
+
+**v1.0 (2026-02-19)**
+- 初始版本。
+
 </details>
 """, unsafe_allow_html=True)
-
 
 
 # ================== 常數與預設參數 ==================
@@ -234,11 +220,26 @@ def simulate_acceleration(mass, area, cd, fr, wheel_radius_m, gear_ratio, motor_
 
     return np.array(time_list), np.array(speed_list), np.array(disp_list)
 
-# ================== WLTC 工作點計算 ==================
+# ================== WLTC 工作點計算（自動計算加速度）==================
 def compute_motor_operating_points_from_wltc(df_wltc, mass, area, cd, fr, wheel_radius_m, gear_ratio, gear_eff):
-    times = df_wltc['time'].to_list()
-    speeds_kmh = df_wltc['speed_kmh'].to_list()
-    accels = df_wltc['accel_ms2'].to_list()
+    """
+    根據 WLTC 數據計算每個時間點的馬達轉速與扭矩。
+    若 df_wltc 中沒有 accel_ms2 欄位，則自動從速度差分計算加速度。
+    """
+    times = df_wltc['time'].values
+    speeds_kmh = df_wltc['speed_kmh'].values
+    
+    # 計算加速度（如果沒有提供）
+    if 'accel_ms2' in df_wltc.columns:
+        accels = df_wltc['accel_ms2'].values
+    else:
+        # 使用差分計算加速度 (m/s²)
+        dt = np.gradient(times)
+        speeds_ms = speeds_kmh / 3.6
+        accels = np.gradient(speeds_ms, dt)
+        # 將加速度存入 df_wltc 以便後續使用
+        df_wltc['accel_ms2'] = accels
+    
     n = len(times)
     F_roll_const = mass * G * fr
     factor_aero = 0.5 * RHO * cd * area
@@ -263,6 +264,7 @@ def compute_motor_operating_points_from_wltc(df_wltc, mass, area, cd, fr, wheel_
     result_df = pd.DataFrame({
         'time': times,
         'speed_kmh': speeds_kmh,
+        'accel_ms2': accels,
         'motor_rpm': motor_rpm,
         'motor_torque_Nm': motor_torque,
         'wheel_torque_Nm': wheel_torque
@@ -484,31 +486,50 @@ with st.sidebar:
     st.caption(f"計算平均車速: {avg_speed_kmh:.1f} km/h")
 
     # ---------- 行駛工況設定 (WLTC) ----------
-    st.header("📁 行駛工況設定 (WLTC)")
-    st.markdown("上傳 **WLTC 行駛工況 CSV**（需含時間(s)、車速(km/h)、加速度(m/s²)）")
-    wltc_file = st.file_uploader("選擇 WLTC CSV 檔案", type=["csv"], key="wltc")
+    st.header("📁 行駛工況設定")
+    st.markdown("上傳 **行駛工況 CSV**（需含時間(s)、車速(km/h)；若無加速度欄位，系統將自動計算）")
+    wltc_file = st.file_uploader("選擇行駛工況 CSV 檔案", type=["csv"], key="wltc")
     if wltc_file is not None:
         try:
             df_wltc = pd.read_csv(wltc_file)
-            st.success(f"成功讀取 WLTC 工況，共 {len(df_wltc)} 筆資料")
+            st.success(f"成功讀取行駛工況，共 {len(df_wltc)} 筆資料")
             
-            idx_t = 0
-            idx_v = 1 if len(df_wltc.columns) > 1 else 0
-            idx_a = 2 if len(df_wltc.columns) > 2 else 0
+            # 自動識別時間與車速欄位
+            time_candidates = [c for c in df_wltc.columns if 'time' in c.lower() or 't' in c.lower()]
+            speed_candidates = [c for c in df_wltc.columns if 'speed' in c.lower() or 'velocity' in c.lower() or 'v' in c.lower()]
             
-            time_col = st.selectbox("時間欄位 (秒)", df_wltc.columns, index=idx_t, key="wltc_time")
-            speed_col = st.selectbox("車速欄位 (km/h)", df_wltc.columns, index=idx_v, key="wltc_speed")
-            accel_col = st.selectbox("加速度欄位 (m/s²)", df_wltc.columns, index=idx_a, key="wltc_accel")
+            if time_candidates:
+                time_col = st.selectbox("時間欄位 (秒)", df_wltc.columns, index=df_wltc.columns.get_loc(time_candidates[0]) if time_candidates else 0)
+            else:
+                time_col = st.selectbox("時間欄位 (秒)", df_wltc.columns, index=0)
+                
+            if speed_candidates:
+                speed_col = st.selectbox("車速欄位 (km/h)", df_wltc.columns, index=df_wltc.columns.get_loc(speed_candidates[0]) if speed_candidates else 1)
+            else:
+                speed_col = st.selectbox("車速欄位 (km/h)", df_wltc.columns, index=1 if len(df_wltc.columns) > 1 else 0)
             
-            df_wltc_clean = df_wltc[[time_col, speed_col, accel_col]].copy()
-            df_wltc_clean.columns = ['time', 'speed_kmh', 'accel_ms2']
-            df_wltc_clean = df_wltc_clean.fillna(0)
+            # 檢查是否有加速度欄位
+            accel_col = None
+            for col in df_wltc.columns:
+                if 'accel' in col.lower() or 'a' in col.lower():
+                    accel_col = col
+                    break
+            
+            df_wltc_clean = df_wltc[[time_col, speed_col]].copy()
+            df_wltc_clean.columns = ['time', 'speed_kmh']
+            if accel_col is not None:
+                df_wltc_clean['accel_ms2'] = df_wltc[accel_col]
+            
+            # 清除缺值
+            df_wltc_clean = df_wltc_clean.dropna()
+            # 確保時間是遞增且等間距（如不是，仍可使用）
             
             st.session_state.df_wltc_raw = df_wltc
             st.session_state.wltc_time_col = time_col
             st.session_state.wltc_speed_col = speed_col
-            st.session_state.wltc_accel_col = accel_col
+            st.session_state.df_wltc_clean = df_wltc_clean  # 儲存清理後的數據
             
+            # 計算工作點（函數內部會自動處理加速度）
             if 'gear_ratio' in locals() and gear_ratio is not None:
                 gear_ratio_val = gear_ratio
             else:
@@ -519,15 +540,15 @@ with st.sidebar:
                 df_wltc_clean, total_mass, area, cd, fr, wheel_radius_m, gear_ratio_val, gear_eff_val
             )
             st.session_state.df_motor_operating_points = df_op
-            st.success("已計算 WLTC 工作點，將在圖1和圖2中疊加顯示。")
+            st.success("已計算工作點，將在圖1和圖2中疊加顯示。")
         except Exception as e:
-            st.error(f"讀取 WLTC 檔案失敗: {e}")
-            if "df_wltc_raw" in st.session_state:
-                del st.session_state.df_wltc_raw
+            st.error(f"讀取檔案失敗: {e}")
+            if "df_wltc_clean" in st.session_state:
+                del st.session_state.df_wltc_clean
                 del st.session_state.df_motor_operating_points
     else:
-        if "df_wltc_raw" in st.session_state:
-            del st.session_state.df_wltc_raw
+        if "df_wltc_clean" in st.session_state:
+            del st.session_state.df_wltc_clean
             del st.session_state.df_motor_operating_points
 
     cd_preview = cd
@@ -775,9 +796,9 @@ st.download_button(label="📥 下載 Excel 報表", data=output.getvalue(), fil
 
 st.markdown("---")
 
-# ================== 圖1：馬達 TN 曲線 + 功率曲線 + WLTC 工作點（含負扭矩）==================
-st.markdown("## 📈 圖1：馬達 TN 曲線 + 功率曲線 + WLTC 工作點")
-st.caption("淡藍色實線為馬達最大扭矩，紅色虛線為平路負載線（馬達側），綠色虛線為爬坡負載線，金色實線為馬達功率。青色散點為 WLTC 工況下的馬達需求工作點（轉速 vs 扭矩），包含負扭矩（再生煞車）。")
+# ================== 圖1：馬達 TN 曲線 + 功率曲線 + WLTC 工作點 ==================
+st.markdown("## 📈 圖1：馬達 TN 曲線 + 功率曲線 + 工作點")
+st.caption("淡藍色實線為馬達最大扭矩，紅色虛線為平路負載線（馬達側），綠色虛線為爬坡負載線，金色實線為馬達功率。青色散點為行駛工況下的馬達需求工作點（轉速 vs 扭矩），包含負扭矩（再生煞車）。")
 
 x_upper = n_max_motor * 1.1
 
@@ -848,7 +869,7 @@ if motor_rpm_climb is not None:
 # WLTC 工作點
 if "df_motor_operating_points" in st.session_state:
     df_op = st.session_state.df_motor_operating_points
-    fig1.add_trace(go.Scatter(x=df_op['motor_rpm'], y=df_op['motor_torque_Nm'], mode='markers', marker=dict(size=4, color='cyan', opacity=0.6, symbol='circle'), name='WLTC 工作點', showlegend=True), secondary_y=False)
+    fig1.add_trace(go.Scatter(x=df_op['motor_rpm'], y=df_op['motor_torque_Nm'], mode='markers', marker=dict(size=4, color='cyan', opacity=0.6, symbol='circle'), name='工作點', showlegend=True), secondary_y=False)
 
 # 設定 Y 軸與 X 軸
 fig1.update_yaxes(title_text="扭矩 (Nm)", secondary_y=False, range=[y_min_torque, y_max_torque], tickvals=y_ticks, tickfont=dict(color='white'), zeroline=True, zerolinecolor='gray', zerolinewidth=1.5)
@@ -907,7 +928,6 @@ fig1.add_annotation(
 )
 
 # ================= 更新版面 Margin =================
-# 加大右側 (r=110) 與上方 (t=100) 的空間，確保往外推的標籤有足夠空間顯示
 fig1.update_layout(legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5), margin=dict(l=80, r=110, t=100, b=20), height=550)
 
 st.plotly_chart(fig1, use_container_width=True)
@@ -915,9 +935,9 @@ st.plotly_chart(fig1, use_container_width=True)
 
 st.markdown("---")
 
-# ================== 圖2：車輪扭矩 vs 車速 + WLTC 工作點（含負扭矩）==================
-st.markdown("## 📈 圖2：車輪扭矩 vs 車速 + WLTC 工作點")
-st.caption("淡藍色實線為最大車輪扭矩，紅色虛線為平路負載線（車輪側），綠色虛線為爬坡負載線。青色散點為 WLTC 工況下的車輪需求扭矩 vs 車速，包含負扭矩（再生煞車）。")
+# ================== 圖2：車輪扭矩 vs 車速 + 工作點 ==================
+st.markdown("## 📈 圖2：車輪扭矩 vs 車速 + 工作點")
+st.caption("淡藍色實線為最大車輪扭矩，紅色虛線為平路負載線（車輪側），綠色虛線為爬坡負載線。青色散點為行駛工況下的車輪需求扭矩 vs 車速，包含負扭矩（再生煞車）。")
 
 idx_design = np.argmin(np.abs(speed_kmh_flat - speed_kmh))
 T_design_flat = T_wheel_flat[idx_design]
@@ -973,7 +993,7 @@ if T_wheel_climb is not None:
 
 # WLTC 工作點
 if "df_motor_operating_points" in st.session_state:
-    fig2.add_trace(go.Scatter(x=df_op['speed_kmh'], y=df_op['wheel_torque_Nm'], mode='markers', marker=dict(size=4, color='cyan', opacity=0.6, symbol='circle'), name='WLTC 工作點', showlegend=True))
+    fig2.add_trace(go.Scatter(x=df_op['speed_kmh'], y=df_op['wheel_torque_Nm'], mode='markers', marker=dict(size=4, color='cyan', opacity=0.6, symbol='circle'), name='工作點', showlegend=True))
 
 # 設定 Y 軸與 X 軸
 x_max = max(v_max_motor, speed_kmh) * 1.15
@@ -984,24 +1004,21 @@ fig2.update_xaxes(title_text="車速 (km/h)", range=[0, x_max], tickfont=dict(co
 # ================= 最上層獨立標籤 =================
 fig2.add_annotation(x=0, y=T_wheel_peak, xref="x", yref="y", text=f"<b>{T_wheel_peak:.1f}</b>", showarrow=False, xanchor="right", xshift=-15, font=dict(color="dodgerblue", size=14), bgcolor="rgba(26,28,35,0.9)", bordercolor="dodgerblue", borderwidth=1, borderpad=4)
 
-# ================= 最上層獨立標籤 (優化防交叉排版) =================
-fig2.add_annotation(x=0, y=T_wheel_peak, xref="x", yref="y", text=f"<b>{T_wheel_peak:.1f}</b>", showarrow=False, xanchor="right", xshift=-15, font=dict(color="dodgerblue", size=14), bgcolor="rgba(26,28,35,0.9)", bordercolor="dodgerblue", borderwidth=1, borderpad=4)
-
-# 【修改點 1】目標車速標籤：強制往「左上方」拉出 (ax 設為負值)
+# 目標車速標籤
 fig2.add_annotation(
     x=speed_kmh, y=T_design_flat, xref="x", yref="y", 
     text=f"<b>目標: {speed_kmh:.0f} km/h</b>", 
     showarrow=True, arrowhead=2, arrowcolor="orange", arrowsize=1, arrowwidth=2, 
-    ax=-55, ay=-65,  # 往左 (-55) 往上 (-65)
+    ax=-55, ay=-65, 
     font=dict(color="orange", size=12), bgcolor="rgba(26,28,35,0.9)", bordercolor="orange", borderwidth=1, borderpad=3
 )
 
-# 【修改點 2】馬達極限車速標籤：強制往「右上方」拉出 (ax 設為正值)
+# 馬達極限車速標籤
 fig2.add_annotation(
     x=v_max_motor, y=T_at_vmax, xref="x", yref="y", 
     text=f"<b>極速: {v_max_motor:.0f} km/h<br>{T_at_vmax:.1f} Nm</b>", 
     showarrow=True, arrowhead=2, arrowcolor="purple", arrowsize=1, arrowwidth=2, 
-    ax=65, ay=-45,   # 往右 (+65) 往上 (-45)
+    ax=65, ay=-45, 
     font=dict(color="#d8b4e2", size=12), bgcolor="rgba(26,28,35,0.9)", bordercolor="purple", borderwidth=1, borderpad=3
 )
 
@@ -1040,4 +1057,29 @@ fig3.update_yaxes(title_text="位移 (m)", secondary_y=True)
 st.plotly_chart(fig3, use_container_width=True)
 
 st.markdown("---")
-st.caption("💡 提示：圖中紫色虛線為目標 0→50 km/h 加速時間，棕色虛線為目標 0→最高車速加速時間。圖1與圖2中的青色散點為 WLTC 工作點，包含負扭矩（再生煞車）。")
+
+# ================== 圖4：行駛工況 - 車速與加速度 vs 時間 ==================
+if "df_wltc_clean" in st.session_state:
+    st.markdown("## 📈 圖4：行駛工況（車速與加速度 vs 時間）")
+    st.caption("藍色實線為車速 (km/h)，紅色虛線為加速度 (m/s²)。可觀察工況中的加速與減速行為。")
+    
+    df_wltc_plot = st.session_state.df_wltc_clean
+    # 確保有加速度數據（若原始無則已自動計算）
+    if 'accel_ms2' not in df_wltc_plot.columns:
+        # 如果還是沒有，手動計算
+        dt = np.gradient(df_wltc_plot['time'].values)
+        speeds_ms = df_wltc_plot['speed_kmh'].values / 3.6
+        df_wltc_plot['accel_ms2'] = np.gradient(speeds_ms, dt)
+    
+    fig4 = make_subplots(specs=[[{"secondary_y": True}]])
+    fig4.add_trace(go.Scatter(x=df_wltc_plot['time'], y=df_wltc_plot['speed_kmh'], mode='lines', name='車速', line=dict(color='dodgerblue', width=2)), secondary_y=False)
+    fig4.add_trace(go.Scatter(x=df_wltc_plot['time'], y=df_wltc_plot['accel_ms2'], mode='lines', name='加速度', line=dict(color='red', width=2, dash='dash')), secondary_y=True)
+    
+    fig4.update_xaxes(title_text="時間 (秒)")
+    fig4.update_yaxes(title_text="車速 (km/h)", secondary_y=False)
+    fig4.update_yaxes(title_text="加速度 (m/s²)", secondary_y=True)
+    fig4.update_layout(height=400, margin=dict(l=20, r=20, t=40, b=20))
+    st.plotly_chart(fig4, use_container_width=True)
+
+st.markdown("---")
+st.caption("💡 提示：圖中紫色虛線為目標 0→50 km/h 加速時間，棕色虛線為目標 0→最高車速加速時間。圖1與圖2中的青色散點為行駛工況工作點，包含負扭矩（再生煞車）。圖4需上傳行駛工況檔案後顯示。")
