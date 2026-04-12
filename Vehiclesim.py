@@ -816,15 +816,36 @@ fig2.update_layout(legend=dict(orientation="h", yanchor="bottom", y=1.02, xancho
 st.plotly_chart(fig2, use_container_width=True)
 st.markdown("---")
 
-# ================== 圖3/圖4 區塊 ==================
+# ================== 圖3：加速性能（速度與位移 vs 時間）==================
 st.markdown("## 📈 圖3：加速性能（速度與位移 vs 時間）")
-fig3 = make_subplots(specs=[[{"secondary_y": True}]])
-fig3.add_trace(go.Scatter(x=time_acc, y=speed_acc, mode='lines', name='車速', line=dict(color='dodgerblue', width=3)), secondary_y=False)
-fig3.add_trace(go.Scatter(x=time_acc, y=disp_acc, mode='lines', name='位移', line=dict(color='red', width=2, dash='dash')), secondary_y=True)
-fig3.update_layout(height=400, margin=dict(l=20, r=20, t=40, b=20))
-st.plotly_chart(fig3, use_container_width=True)
-st.markdown("---")
+st.caption("藍色實線為車速隨時間變化，紅色虛線為位移隨時間變化。垂直線標註實際達到50 km/h和最高車速的時間，以及目標加速時間。")
 
+fig3 = make_subplots(specs=[[{"secondary_y": True}]])
+fig3.add_trace(go.Scatter(x=time_acc, y=speed_acc, mode='lines', name='車速 (km/h)', line=dict(color='dodgerblue', width=3)), secondary_y=False)
+fig3.add_trace(go.Scatter(x=time_acc, y=disp_acc, mode='lines', name='位移 (m)', line=dict(color='red', width=2, dash='dash')), secondary_y=True)
+
+idx_50 = np.argmax(speed_acc >= 50)
+if idx_50 > 0:
+    t_50 = time_acc[idx_50]
+    fig3.add_vline(x=t_50, line_width=1, line_dash="dot", line_color="orange", opacity=0.7)
+    fig3.add_annotation(x=t_50, y=50, text=f"實際50km/h @ {t_50:.1f}s", showarrow=True, arrowhead=2, ax=20, ay=-30)
+idx_max = np.argmax(speed_acc >= speed_kmh * 0.99)
+if idx_max > 0:
+    t_max = time_acc[idx_max]
+    fig3.add_vline(x=t_max, line_width=1, line_dash="dot", line_color="green", opacity=0.7)
+    fig3.add_annotation(x=t_max, y=speed_kmh, text=f"實際{int(speed_kmh)}km/h @ {t_max:.1f}s", showarrow=True, arrowhead=2, ax=20, ay=30)
+fig3.add_vline(x=accel_time_0to50, line_width=1, line_dash="dot", line_color="purple", opacity=0.7)
+fig3.add_annotation(x=accel_time_0to50, y=50, text=f"目標50km/h @ {accel_time_0to50:.1f}s", showarrow=True, arrowhead=2, ax=20, ay=-50, font=dict(color="purple"))
+fig3.add_vline(x=accel_time_full, line_width=1, line_dash="dot", line_color="brown", opacity=0.7)
+fig3.add_annotation(x=accel_time_full, y=speed_kmh, text=f"目標最高車速 @ {accel_time_full:.1f}s", showarrow=True, arrowhead=2, ax=20, ay=-70, font=dict(color="brown"))
+
+fig3.update_layout(legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5), margin=dict(l=20, r=20, t=40, b=20), height=400)
+fig3.update_xaxes(title_text="時間 (秒)")
+fig3.update_yaxes(title_text="車速 (km/h)", secondary_y=False)
+fig3.update_yaxes(title_text="位移 (m)", secondary_y=True)
+st.plotly_chart(fig3, use_container_width=True)
+
+# ================== 圖4 區塊 ==================
 if "df_wltc_clean" in st.session_state:
     st.markdown("## 📈 圖4：行駛工況（車速與加速度 vs 時間）")
     df_wltc_plot = st.session_state.df_wltc_clean
