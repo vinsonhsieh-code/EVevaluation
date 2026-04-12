@@ -14,6 +14,31 @@ except ImportError:
     SCIPY_AVAILABLE = False
     st.warning("⚠️ 未安裝 SciPy，理論能耗計算功能將無法使用。請執行 `pip install scipy` 以啟用此功能。")
 
+# ================== 版本歷史記錄 ==================
+st.markdown("""
+<details>
+<summary>📜 版本歷史記錄</summary>
+
+**v2.4 (2026-04-12)**
+- 修正 `np.gradient` 計算加速度的致命 Bug。
+- 優化圖5「理論能耗計算」：正式納入齒輪與馬達效率損耗。
+- 區分「輪上能耗」與「電池端理論能耗 (對應論文)」，並獨立拆解動能回收數據。
+
+**v2.3 (2026-04-12)**
+- 新增「理論能耗計算」模組與圖5。
+
+**v2.2 (2026-04-12)**
+- 新增圖4：行駛工況車速與加速度 vs 時間。
+
+**v2.1 (2026-04-11)**
+- 新增「讀取馬達TN曲線」模式。
+
+**v2.0 (2026-04-06)**
+- 整合 WLTC 分析、反向動力學計算。
+</details>
+""", unsafe_allow_html=True)
+
+
 # ================== 常數與預設參數 ==================
 G = 9.81
 RHO = 1.2
@@ -201,10 +226,16 @@ def simulate_acceleration(mass, area, cd, fr, wheel_radius_m, gear_ratio, motor_
 
 # ================== 行駛工況工作點計算 ==================
 def compute_motor_operating_points_from_wltc(df_wltc, mass, area, cd, fr, wheel_radius_m, gear_ratio, gear_eff):
-    # 這裡確保傳入的 df_wltc 已經具備 accel_ms2 欄位 (在檔案讀取階段已處理)
     times = df_wltc['time'].values
     speeds_kmh = df_wltc['speed_kmh'].values
-    accels = df_wltc['accel_ms2'].values
+    
+    # 【安全防護】確保一定有加速度，若無則依時間正確求導
+    if 'accel_ms2' in df_wltc.columns:
+        accels = df_wltc['accel_ms2'].values
+    else:
+        speeds_ms = speeds_kmh / 3.6
+        accels = np.gradient(speeds_ms, times)
+        df_wltc['accel_ms2'] = accels
     
     n = len(times)
     F_roll_const = mass * G * fr
@@ -213,6 +244,7 @@ def compute_motor_operating_points_from_wltc(df_wltc, mass, area, cd, fr, wheel_
     motor_rpm = np.zeros(n)
     motor_torque = np.zeros(n)
     wheel_torque = np.zeros(n)
+    
     for i in range(n):
         v_ms = speeds_kmh[i] / 3.6
         F_roll = F_roll_const
@@ -227,6 +259,7 @@ def compute_motor_operating_points_from_wltc(df_wltc, mass, area, cd, fr, wheel_
             motor_torque[i] = F_tractive * wheel_radius_m / (gear_ratio * gear_eff)
             
         wheel_torque[i] = motor_torque[i] * gear_ratio * gear_eff
+        
     result_df = pd.DataFrame({
         'time': times,
         'speed_kmh': speeds_kmh,
@@ -237,52 +270,70 @@ def compute_motor_operating_points_from_wltc(df_wltc, mass, area, cd, fr, wheel_
     })
     return result_df
 
-# ================== 理論能耗計算函數（精確物理拆解版）==================
-def compute_theoretical_energy_consumption(df_cycle, mass, area, cd, fr):
+# ================== 理論能耗計算函數（納入損耗對齊論文）==================
+def compute_theoretical_energy_consumption(df_cycle, mass, area, cd, fr, gear_eff_percent, motor_eff_percent):
+    """
+    根據行駛工況計算理論能耗 (Wh/km)
+    加入傳動與馬達效率，以計算出貼近真實的「電池端理論能耗」
+    """
     times = df_cycle['time'].values
     speeds_kmh = df_cycle['speed_kmh'].values
     accels = df_cycle['accel_ms2'].values
     
     speeds_ms = speeds_kmh / 3.6
     
-    # 計算各物理阻力
+    # 1. 物理阻力計算 (輪上)
     F_roll = mass * G * fr
     F_aero = 0.5 * RHO * cd * area * speeds_ms**2
     F_acc = mass * accels
-    
     F_trac = F_roll + F_aero + F_acc   # 總牽引力 (N)
-    P_inst = F_trac * speeds_ms        # 瞬時淨功率 (W)
+    P_wheel = F_trac * speeds_ms       # 輪上淨功率 (W)
     
-    # 將功率拆分為「驅動出力」與「動能回收 (Regen)」
-    P_drive = np.maximum(P_inst, 0)
-    P_regen = np.minimum(P_inst, 0)
+    # 2. 轉換為電池端功率 (考慮效率)
+    eta_sys = (gear_eff_percent / 100.0) * (motor_eff_percent / 100.0)
+    P_batt = np.zeros_like(P_wheel)
+    
+    # 驅動時：耗電會因為損耗而放大 (除以效率)
+    drive_mask = P_wheel >= 0
+    P_batt[drive_mask] = P_wheel[drive_mask] / eta_sys
+    
+    # 回收時：充電會因為損耗而打折 (乘以效率)
+    regen_mask = P_wheel < 0
+    P_batt[regen_mask] = P_wheel[regen_mask] * eta_sys
+    
+    # 拆分電池端正負功率
+    P_drive_batt = np.maximum(P_batt, 0)
+    P_regen_batt = np.minimum(P_batt, 0)
     
     if SCIPY_AVAILABLE:
-        # 為了相容新舊版 SciPy，先嘗試取用新的 cumulative_trapezoid
         try:
             cum_trapz_func = integrate.cumulative_trapezoid
         except AttributeError:
             cum_trapz_func = integrate.cumtrapz
             
-        energy_wh_cumulative = cum_trapz_func(P_inst, times, initial=0) / 3600.0
+        energy_wh_cumulative = cum_trapz_func(P_batt, times, initial=0) / 3600.0
         total_energy_wh = energy_wh_cumulative[-1]
-        drive_energy_wh = integrate.trapezoid(P_drive, times) / 3600.0
-        regen_energy_wh = integrate.trapezoid(P_regen, times) / 3600.0
+        
+        drive_energy_wh = integrate.trapezoid(P_drive_batt, times) / 3600.0
+        regen_energy_wh = integrate.trapezoid(P_regen_batt, times) / 3600.0
+        wheel_energy_wh = integrate.trapezoid(P_wheel, times) / 3600.0
         distance_km = integrate.trapezoid(speeds_ms, times) / 1000.0
     else:
-        total_energy_wh = np.trapz(P_inst, times) / 3600.0
-        drive_energy_wh = np.trapz(P_drive, times) / 3600.0
-        regen_energy_wh = np.trapz(P_regen, times) / 3600.0
-        # Numpy 降級版累積能量
-        dt = np.diff(times, prepend=times[0])
-        energy_wh_cumulative = np.cumsum(P_inst * dt) / 3600.0
+        total_energy_wh = np.trapz(P_batt, times) / 3600.0
+        drive_energy_wh = np.trapz(P_drive_batt, times) / 3600.0
+        regen_energy_wh = np.trapz(P_regen_batt, times) / 3600.0
+        wheel_energy_wh = np.trapz(P_wheel, times) / 3600.0
         distance_km = np.trapz(speeds_ms, times) / 1000.0
+        
+        dt = np.diff(times, prepend=times[0])
+        energy_wh_cumulative = np.cumsum(P_batt * dt) / 3600.0
     
-    wh_per_km = total_energy_wh / distance_km if distance_km > 0 else 0
+    wh_per_km_batt = total_energy_wh / distance_km if distance_km > 0 else 0
+    wh_per_km_wheel = wheel_energy_wh / distance_km if distance_km > 0 else 0
     
-    return wh_per_km, distance_km, total_energy_wh, drive_energy_wh, regen_energy_wh, times, P_inst, energy_wh_cumulative
+    return wh_per_km_batt, wh_per_km_wheel, distance_km, total_energy_wh, drive_energy_wh, regen_energy_wh, times, P_batt, energy_wh_cumulative
 
-# ================== 自訂 JSON 渲染（淺藍色高光）==================
+# ================== 自訂 JSON 渲染 ==================
 LIGHT_BLUE = "#87CEEB"
 
 def render_json_with_diff(data, default_data):
@@ -490,35 +541,21 @@ with st.sidebar:
             df_wltc = pd.read_csv(wltc_file)
             st.success(f"成功讀取行駛工況，共 {len(df_wltc)} 筆資料")
             
-            # 自動識別時間與車速欄位
             time_candidates = [c for c in df_wltc.columns if 'time' in c.lower() or 't' in c.lower()]
             speed_candidates = [c for c in df_wltc.columns if 'speed' in c.lower() or 'velocity' in c.lower() or 'v' in c.lower()]
             
-            if time_candidates:
-                time_col = st.selectbox("時間欄位 (秒)", df_wltc.columns, index=df_wltc.columns.get_loc(time_candidates[0]) if time_candidates else 0)
-            else:
-                time_col = st.selectbox("時間欄位 (秒)", df_wltc.columns, index=0)
-                
-            if speed_candidates:
-                speed_col = st.selectbox("車速欄位 (km/h)", df_wltc.columns, index=df_wltc.columns.get_loc(speed_candidates[0]) if speed_candidates else 1)
-            else:
-                speed_col = st.selectbox("車速欄位 (km/h)", df_wltc.columns, index=1 if len(df_wltc.columns) > 1 else 0)
+            time_col = st.selectbox("時間欄位 (秒)", df_wltc.columns, index=df_wltc.columns.get_loc(time_candidates[0]) if time_candidates else 0)
+            speed_col = st.selectbox("車速欄位 (km/h)", df_wltc.columns, index=df_wltc.columns.get_loc(speed_candidates[0]) if speed_candidates else 1 if len(df_wltc.columns) > 1 else 0)
             
             df_wltc_clean = df_wltc[[time_col, speed_col]].copy()
             df_wltc_clean.columns = ['time', 'speed_kmh']
             df_wltc_clean = df_wltc_clean.dropna()
 
-            # 檢查是否有加速度欄位，若無則精準計算
-            accel_col = None
-            for col in df_wltc.columns:
-                if 'accel' in col.lower() or 'a' in col.lower():
-                    accel_col = col
-                    break
-            
+            # 檢查加速度並一次性算好存入 dataframe (修正 gradient 語法錯誤)
+            accel_col = next((col for col in df_wltc.columns if 'accel' in col.lower() or 'a' in col.lower()), None)
             if accel_col is not None:
                 df_wltc_clean['accel_ms2'] = df_wltc[accel_col]
             else:
-                # 【修正1】使用正確的 NumPy 梯度函數，避免程式崩潰
                 speeds_ms = df_wltc_clean['speed_kmh'].values / 3.6
                 times = df_wltc_clean['time'].values
                 df_wltc_clean['accel_ms2'] = np.gradient(speeds_ms, times)
@@ -549,6 +586,7 @@ with st.sidebar:
             del st.session_state.df_wltc_clean
             del st.session_state.df_motor_operating_points
 
+    # 簡易預估計算...
     cd_preview = cd
     fr_preview = fr
     avg_speed_ms_preview = avg_speed_kmh / 3.6
@@ -558,13 +596,9 @@ with st.sidebar:
     P_wheel_preview = F_total_preview * avg_speed_ms_preview / 1000
     P_batt_preview = P_wheel_preview / (gear_eff/100) / (motor_eff/100)
     usable_energy_preview = user_battery_energy_kwh * (battery_soc / 100)
-    if P_batt_preview > 0:
-        hours_preview = usable_energy_preview / P_batt_preview
-    else:
-        hours_preview = 0
+    hours_preview = usable_energy_preview / P_batt_preview if P_batt_preview > 0 else 0
     range_preview = avg_speed_kmh * hours_preview
     st.metric("即時估計里程", f"{range_preview:.1f} km")
-
     st.markdown("---")
     st.caption("修改參數後，下方結果會自動更新")
 
@@ -576,11 +610,7 @@ if 'gear_eff' not in locals():
     gear_eff = 95.0
 
 if voltage is None:
-    if est_mode == '自動估算':
-        power_val = manual_max_power
-    else:
-        power_val = manual_max_power
-    voltage = 48 if power_val < 20 else 96
+    voltage = 48 if manual_max_power < 20 else 96
 
 if est_mode == '自動估算':
     required_max_rpm = speed_ms * 60 / (2 * math.pi * wheel_radius_m) * gear_ratio
@@ -601,22 +631,17 @@ else:
 rated_power = max_power_kw_used / 2
 
 if desired_range:
-    avg_speed_ms_display = speed_ms * 0.7
-    avg_speed_kmh_display = avg_speed_ms_display * 3.6
-    time_h = desired_range / avg_speed_kmh_display
-    avg_power_kw = rated_power * 0.7
-    battery_spec = estimate_battery(avg_power_kw, voltage, duration_h=time_h)
+    time_h = desired_range / (speed_ms * 0.7 * 3.6)
+    battery_spec = estimate_battery(rated_power * 0.7, voltage, duration_h=time_h)
 else:
     battery_spec = estimate_battery(rated_power, voltage, duration_h=1.0)
 
 controller_spec = estimate_controller(max_power_kw_used, voltage)
-gearbox_spec = {'類型': '固定減速比齒輪箱', '減速比': round(gear_ratio, 2), '效率 (%)': 95}
+gearbox_spec = {'類型': '固定減速比齒輪箱', '減速比': round(gear_ratio, 2), '效率 (%)': gear_eff}
 
 F_roll_start = total_mass * G * fr
-F_accel_full = total_mass * avg_accel_full
-T_motor_start_full = (F_roll_start + F_accel_full) * wheel_radius_m / (gear_ratio * ETA_DRIVE)
-F_accel_50 = total_mass * avg_accel_50
-T_motor_start_50 = (F_roll_start + F_accel_50) * wheel_radius_m / (gear_ratio * ETA_DRIVE)
+T_motor_start_full = (F_roll_start + total_mass * avg_accel_full) * wheel_radius_m / (gear_ratio * ETA_DRIVE)
+T_motor_start_50 = (F_roll_start + total_mass * avg_accel_50) * wheel_radius_m / (gear_ratio * ETA_DRIVE)
 
 n = np.linspace(0, n_max_motor * 1.1, 500)
 T_motor_max = np.zeros_like(n)
@@ -643,37 +668,23 @@ T_wheel_max = T_motor_max * gear_ratio * ETA_DRIVE
 v_max_motor = n_max_motor / gear_ratio * (2 * math.pi * wheel_radius_m) * 3.6 / 60
 
 motor_rpm_flat, torque_flat, speed_kmh_flat, force_flat = calculate_load_curve(
-    total_mass, area, cd, fr, wheel_radius_m, gear_ratio, speed_ms, grade_percent=0,
-    extend_to_vmax=v_max_motor
+    total_mass, area, cd, fr, wheel_radius_m, gear_ratio, speed_ms, grade_percent=0, extend_to_vmax=v_max_motor
 )
 if grade_percent > 0:
     motor_rpm_climb, torque_climb, speed_kmh_climb, force_climb = calculate_load_curve(
-        total_mass, area, cd, fr, wheel_radius_m, gear_ratio, speed_ms, grade_percent,
-        extend_to_vmax=v_max_motor
+        total_mass, area, cd, fr, wheel_radius_m, gear_ratio, speed_ms, grade_percent, extend_to_vmax=v_max_motor
     )
 else:
-    motor_rpm_climb, torque_climb, speed_kmh_climb = None, None, None
+    motor_rpm_climb, torque_climb = None, None
 
 T_wheel_flat = force_flat * wheel_radius_m
 T_wheel_climb = force_climb * wheel_radius_m if grade_percent > 0 else None
 
 time_acc, speed_acc, disp_acc = simulate_acceleration(
-    total_mass, area, cd, fr, wheel_radius_m, gear_ratio,
-    motor_spec, base_speed, T_peak, speed_ms, dt=0.1,
-    custom_tn_df=custom_tn_df
+    total_mass, area, cd, fr, wheel_radius_m, gear_ratio, motor_spec, base_speed, T_peak, speed_ms, dt=0.1, custom_tn_df=custom_tn_df
 )
-
 actual_0to50 = time_acc[np.argmax(speed_acc >= 50)] if np.any(speed_acc >= 50) else np.inf
 actual_full_time = time_acc[np.argmax(speed_acc >= speed_kmh * 0.99)] if np.any(speed_acc >= speed_kmh * 0.99) else np.inf
-
-avg_speed_ms_est = avg_speed_kmh / 3.6
-F_roll_avg = total_mass * G * fr
-F_air_avg = 0.5 * RHO * cd * area * avg_speed_ms_est**2
-P_wheel_avg = (F_roll_avg + F_air_avg) * avg_speed_ms_est / 1000
-P_battery_avg = P_wheel_avg / (gear_eff/100) / (motor_eff/100)
-usable_energy = user_battery_energy_kwh * (battery_soc / 100)
-driving_hours = usable_energy / P_battery_avg if P_battery_avg > 0 else 0
-estimated_range = avg_speed_kmh * driving_hours
 
 if "default_motor_spec" not in st.session_state:
     st.session_state.default_motor_spec = motor_spec.copy()
@@ -692,164 +703,68 @@ with st.expander("🏎️ 動態性能表現", expanded=True):
     if T_motor_start_full <= T_peak and T_motor_start_50 <= T_peak:
         st.success("✅ 馬達峰值扭矩足夠滿足兩種加速需求")
     else:
-        short = max(0, T_motor_start_full - T_peak, T_motor_start_50 - T_peak)
-        st.error(f"❌ 馬達峰值扭矩不足，需增加 {short:.1f} Nm")
+        st.error(f"❌ 馬達峰值扭矩不足，需增加 {max(0, T_motor_start_full - T_peak, T_motor_start_50 - T_peak):.1f} Nm")
     st.markdown("---")
-    st.markdown("**加速性能對比**")
     col_a, col_b = st.columns(2)
     with col_a:
         st.metric("目標 0→50 km/h", f"{accel_time_0to50:.1f} s")
-        actual_color = "green" if actual_0to50 <= accel_time_0to50 else "red"
-        st.markdown(f'<p style="color:{actual_color};">實際 0→50 km/h: {actual_0to50:.1f} s</p>', unsafe_allow_html=True)
-        if actual_0to50 <= accel_time_0to50:
-            st.success("✅ 滿足目標")
-        else:
-            st.error("❌ 未達目標")
+        st.markdown(f'<p style="color:{"green" if actual_0to50 <= accel_time_0to50 else "red"};">實際: {actual_0to50:.1f} s</p>', unsafe_allow_html=True)
     with col_b:
         st.metric("目標 0→最高車速", f"{accel_time_full:.1f} s")
-        actual_color_full = "green" if actual_full_time <= accel_time_full else "red"
-        st.markdown(f'<p style="color:{actual_color_full};">實際 0→最高車速: {actual_full_time:.1f} s</p>', unsafe_allow_html=True)
-        if actual_full_time <= accel_time_full:
-            st.success("✅ 滿足目標")
-        else:
-            st.error("❌ 未達目標")
-    st.caption("📌 說明：目標值為設計要求，實際值根據馬達真實性能模擬。若實際值 > 目標值，表示馬達性能不足。")
+        st.markdown(f'<p style="color:{"green" if actual_full_time <= accel_time_full else "red"};">實際: {actual_full_time:.1f} s</p>', unsafe_allow_html=True)
 
 with st.expander("🔋 電池 (估算規格)", expanded=False):
     st.markdown(render_battery_with_diff(battery_spec, st.session_state.default_battery_spec), unsafe_allow_html=True)
-
 with st.expander("🎛️ 控制器", expanded=False):
     st.json(controller_spec)
 with st.expander("⚙️ 齒輪箱", expanded=False):
     st.json(gearbox_spec)
 with st.expander("🔁 轉換係數", expanded=False):
-    torque_factor = gear_ratio * ETA_DRIVE
-    speed_factor = (2 * math.pi * wheel_radius_m * 60) / (gear_ratio * 1000) * 3.6
-    st.metric("輪上扭矩 / 馬達扭矩", f"{torque_factor:.3f}")
-    st.caption("計算式：減速比 × 傳動效率")
-    st.metric("車速 (km/h) / 馬達轉速 (rpm)", f"{speed_factor:.6f}")
-    st.caption("計算式：(2π × 輪胎半徑(m) × 60) / (減速比 × 1000) × 3.6")
-
-idx_design_local = np.argmin(np.abs(speed_kmh_flat - speed_kmh))
-T_design_flat_local = force_flat[idx_design_local] * wheel_radius_m
-F_design_flat_local = force_flat[idx_design_local]
-with st.expander("🔧 設計最高車速點性能", expanded=False):
-    st.metric("最高車速點輪上扭矩", f"{T_design_flat_local:.1f} Nm")
-    st.metric("最高車速點輪上推力", f"{F_design_flat_local:.1f} N")
-
-with st.expander("🔋 行駛里程估計 (簡易法)", expanded=True):
-    st.markdown("**估計結果**")
-    col1, col2 = st.columns(2)
-    with col1:
-        st.metric("估計行駛里程", f"{estimated_range:.1f} km")
-        st.metric("可行駛時間", f"{driving_hours:.1f} h")
-    if use_range and desired_range is not None:
-        with col2:
-            st.metric("期望續航里程", f"{desired_range:.1f} km")
-            range_met = estimated_range >= desired_range
-            st.markdown(f'<p style="color:{"green" if range_met else "red"};">比較結果: 估計里程 {"≥" if range_met else "<"} 期望里程</p>', unsafe_allow_html=True)
-            if range_met:
-                st.success("✅ 滿足目標")
-            else:
-                st.error("❌ 未達目標")
-    st.markdown("---")
-    st.markdown("**計算公式**")
-    st.latex(r"P_{\text{avg}} = \frac{F_{\text{roll}} + F_{\text{air}}}{1000} \cdot v_{\text{avg}}")
-    st.latex(r"P_{\text{batt}} = \frac{P_{\text{avg}}}{\eta_{\text{gear}} \cdot \eta_{\text{motor}}}")
-    st.latex(r"E_{\text{usable}} = E_{\text{batt}} \cdot \text{SOC}")
-    st.latex(r"t_{\text{drive}} = \frac{E_{\text{usable}}}{P_{\text{batt}}}")
-    st.latex(r"\text{Range} = v_{\text{avg}} \cdot t_{\text{drive}}")
-    st.markdown(rf"""
-    - **平均車速** \(v_{{\text{{avg}}}}\) = {avg_speed_kmh:.1f} km/h
-    - **滾動阻力** \(F_{{\text{{roll}}}}\) = {F_roll_avg:.1f} N
-    - **空氣阻力** \(F_{{\text{{air}}}}\) = {F_air_avg:.1f} N
-    - **平均輪上功率** \(P_{{\text{{avg}}}}\) = {P_wheel_avg:.2f} kW
-    - **齒輪效率** \(\eta_{{\text{{gear}}}}\) = {gear_eff}%
-    - **馬達效率** \(\eta_{{\text{{motor}}}}\) = {motor_eff}%
-    - **電池平均輸出功率** \(P_{{\text{{batt}}}}\) = {P_battery_avg:.2f} kW
-    - **電池總能量 (輸入)** \(E_{{\text{{batt}}}}\) = {user_battery_energy_kwh:.2f} kWh
-    - **可用 SOC** = {battery_soc}% → **可用能量** \(E_{{\text{{usable}}}}\) = {usable_energy:.2f} kWh
-    - **可行駛時間** \(t_{{\text{{drive}}}}\) = {driving_hours:.1f} h
-    - **估計里程** = {estimated_range:.1f} km
-    """)
-
-# 下載 Excel
-df_motor = pd.DataFrame([motor_spec])
-df_battery = pd.DataFrame([battery_spec])
-df_controller = pd.DataFrame([controller_spec])
-df_gearbox = pd.DataFrame([gearbox_spec])
-output = BytesIO()
-with pd.ExcelWriter(output, engine='openpyxl') as writer:
-    df_motor.to_excel(writer, sheet_name='馬達', index=False)
-    df_battery.to_excel(writer, sheet_name='電池', index=False)
-    df_controller.to_excel(writer, sheet_name='控制器', index=False)
-    df_gearbox.to_excel(writer, sheet_name='齒輪箱', index=False)
-st.download_button(label="📥 下載 Excel 報表", data=output.getvalue(), file_name="powertrain_spec.xlsx",
-                   mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
+    st.metric("輪上扭矩 / 馬達扭矩", f"{gear_ratio * ETA_DRIVE:.3f}")
+    st.metric("車速 (km/h) / 馬達轉速 (rpm)", f"{(2 * math.pi * wheel_radius_m * 60) / (gear_ratio * 1000) * 3.6:.6f}")
 
 st.markdown("---")
 
 # ================== 圖1：馬達 TN 曲線 + 功率曲線 + 工作點 ==================
 st.markdown("## 📈 圖1：馬達 TN 曲線 + 功率曲線 + 工作點")
-st.caption("淡藍色實線為馬達最大扭矩，紅色虛線為平路負載線（馬達側），綠色虛線為爬坡負載線，金色實線為馬達功率。青色散點為行駛工況下的馬達需求工作點（轉速 vs 扭矩），包含負扭矩（再生煞車）。")
 
 x_upper = n_max_motor * 1.1
 grid_step = T_peak / 4.0 if T_peak > 0 else 10
 y_min_raw = min(0, T_motor_max.min(), torque_flat.min())
-
 if "df_motor_operating_points" in st.session_state:
     min_op = st.session_state.df_motor_operating_points['motor_torque_Nm'].min()
-    if not np.isnan(min_op):
-        y_min_raw = min(y_min_raw, min_op)
+    if not np.isnan(min_op): y_min_raw = min(y_min_raw, min_op)
 y_min_torque = math.floor(y_min_raw / grid_step) * grid_step
 
 y_max_torque = T_peak + grid_step
 if "df_motor_operating_points" in st.session_state:
     max_op = st.session_state.df_motor_operating_points['motor_torque_Nm'].max()
-    if not np.isnan(max_op) and max_op > y_max_torque:
-        y_max_torque = math.ceil(max_op / grid_step) * grid_step
+    if not np.isnan(max_op) and max_op > y_max_torque: y_max_torque = math.ceil(max_op / grid_step) * grid_step
 
 ratio = max_power_kw_used / T_peak if T_peak > 0 else 1
 p_min = y_min_torque * ratio
 p_max = y_max_torque * ratio
 
 num_ticks = int(round((y_max_torque - y_min_torque) / grid_step)) + 1
-all_y_ticks = [y_min_torque + i * grid_step for i in range(num_ticks)]
-clean_y_ticks = [v for v in all_y_ticks if abs(v - T_peak) > (grid_step*0.1)]
-y_ticks = [round(v, 2) for v in clean_y_ticks]
+y_ticks = [round(v, 2) for v in [y_min_torque + i * grid_step for i in range(num_ticks)] if abs(v - T_peak) > (grid_step*0.1)]
 p_ticks = [round(v * ratio, 2) for v in y_ticks]
-
-x_ticks = list(np.linspace(0, x_upper, 6))
-x_ticks.extend([base_speed, n_max_motor])
-x_ticks = sorted(list(set([round(v, -1) for v in x_ticks])))
+x_ticks = sorted(list(set([round(v, -1) for v in list(np.linspace(0, x_upper, 6)) + [base_speed, n_max_motor]])))
 
 fig1 = make_subplots(specs=[[{"secondary_y": True}]])
 fig1.add_trace(go.Scatter(x=n, y=T_motor_max, mode='lines', name='馬達最大扭矩', line=dict(color='dodgerblue', width=3)), secondary_y=False)
-fig1.add_trace(go.Scatter(x=motor_rpm_flat, y=torque_flat, mode='lines', name='平路負載線 (馬達側)', line=dict(color='red', width=3, dash='dash')), secondary_y=False)
+fig1.add_trace(go.Scatter(x=motor_rpm_flat, y=torque_flat, mode='lines', name='平路負載線', line=dict(color='red', width=3, dash='dash')), secondary_y=False)
 if motor_rpm_climb is not None:
-    fig1.add_trace(go.Scatter(x=motor_rpm_climb, y=torque_climb, mode='lines', name=f'爬坡負載線 ({grade_percent}%)', line=dict(color='green', width=3, dash='dot')), secondary_y=False)
+    fig1.add_trace(go.Scatter(x=motor_rpm_climb, y=torque_climb, mode='lines', name=f'爬坡負載線', line=dict(color='green', width=3, dash='dot')), secondary_y=False)
 fig1.add_trace(go.Scatter(x=n, y=P_motor_out, mode='lines', name='馬達功率', line=dict(color='gold', width=2, dash='solid')), secondary_y=True)
 
-fig1.add_trace(go.Scatter(x=[0], y=[T_peak], mode='markers', name='最大扭矩點', marker=dict(color='dodgerblue', size=10)), secondary_y=False)
-fig1.add_trace(go.Scatter(x=[base_speed], y=[T_peak], mode='markers', name='基速點', marker=dict(color='green', size=10)), secondary_y=False)
+fig1.add_trace(go.Scatter(x=[0, base_speed], y=[T_peak, T_peak], mode='markers', name='關鍵點', marker=dict(color='dodgerblue', size=10)), secondary_y=False)
 T_at_max_n = (max_power_kw_used * 1000) / (2 * math.pi * n_max_motor / 60) if n_max_motor > 0 else 0
-fig1.add_trace(go.Scatter(x=[n_max_motor], y=[T_at_max_n], mode='markers', name='最高轉速點', marker=dict(color='purple', size=10)), secondary_y=False)
+fig1.add_trace(go.Scatter(x=[n_max_motor], y=[T_at_max_n], mode='markers', name='極速點', marker=dict(color='purple', size=10)), secondary_y=False)
 
 design_rpm = speed_ms * 60 / (2 * math.pi * wheel_radius_m) * gear_ratio
 fig1.add_vline(x=design_rpm, line_width=2, line_dash="dash", line_color="orange", opacity=0.9)
 T_at_design = np.interp(design_rpm, n, T_motor_max) if design_rpm <= n_max_motor else 0
-fig1.add_trace(go.Scatter(x=[design_rpm], y=[T_at_design], mode='markers', name=f'目標車速轉速', marker=dict(color='orange', size=10)), secondary_y=False)
-
-intersections_flat = find_intersection(n, T_motor_max, motor_rpm_flat, torque_flat)
-for i, (x_cross, y_cross) in enumerate(intersections_flat):
-    fig1.add_trace(go.Scatter(x=[x_cross], y=[y_cross], mode='markers', name='平路交點' if i==0 else None, marker=dict(color='red', size=12, symbol='x'), showlegend=(i==0)), secondary_y=False)
-    fig1.add_annotation(x=x_cross, y=y_cross, text=f'{x_cross:.0f} rpm<br>{y_cross:.1f} Nm', showarrow=True, arrowhead=2, ax=45, ay=40, font=dict(size=11, color="white"), bgcolor="rgba(255,0,0,0.4)", bordercolor="red", borderwidth=1)
-
-if motor_rpm_climb is not None:
-    intersections_climb = find_intersection(n, T_motor_max, motor_rpm_climb, torque_climb)
-    for i, (x_cross, y_cross) in enumerate(intersections_climb):
-        fig1.add_trace(go.Scatter(x=[x_cross], y=[y_cross], mode='markers', name='爬坡交點' if i==0 else None, marker=dict(color='green', size=12, symbol='x'), showlegend=(i==0)), secondary_y=False)
-        fig1.add_annotation(x=x_cross, y=y_cross, text=f'{x_cross:.0f} rpm<br>{y_cross:.1f} Nm', showarrow=True, arrowhead=2, ax=-45, ay=-40, font=dict(size=11, color="white"), bgcolor="rgba(0,128,0,0.4)", bordercolor="green", borderwidth=1)
+fig1.add_trace(go.Scatter(x=[design_rpm], y=[T_at_design], mode='markers', name='目標轉速', marker=dict(color='orange', size=10)), secondary_y=False)
 
 if "df_motor_operating_points" in st.session_state:
     df_op = st.session_state.df_motor_operating_points
@@ -859,12 +774,11 @@ fig1.update_yaxes(title_text="扭矩 (Nm)", secondary_y=False, range=[y_min_torq
 fig1.update_yaxes(title_text="功率 (kW)", secondary_y=True, range=[p_min, p_max], tickvals=p_ticks, tickfont=dict(color='white'), zeroline=True, zerolinecolor='gray', zerolinewidth=1.5, showgrid=False)
 fig1.update_xaxes(title_text="轉速 (rpm)", range=[0, x_upper], tickvals=x_ticks, tickfont=dict(color='white'), zeroline=True, zerolinecolor='gray', zerolinewidth=1.5)
 
-# ================= 最上層獨立標籤 (向外擴散防重疊設計) =================
 fig1.add_annotation(x=0, y=T_peak, xref="paper", yref="y", text=f"<b>{T_peak:.1f}</b>", showarrow=False, xanchor="right", xshift=-15, font=dict(color="dodgerblue", size=14), bgcolor="rgba(26,28,35,0.9)", bordercolor="dodgerblue", borderwidth=1, borderpad=4)
 fig1.add_annotation(x=1, y=max_power_kw_used, xref="paper", yref="y2", text=f"<b>{max_power_kw_used:.2f}</b>", showarrow=False, xanchor="left", xshift=15, font=dict(color="gold", size=14), bgcolor="rgba(26,28,35,0.9)", bordercolor="gold", borderwidth=1, borderpad=4)
-fig1.add_annotation(x=base_speed, y=T_peak, xref="x", yref="y", text=f"<b>基速: {base_speed:.0f} rpm</b>", showarrow=True, arrowhead=2, arrowcolor="green", arrowsize=1, arrowwidth=2, ax=0, ay=-45, font=dict(color="lightgreen", size=12), bgcolor="rgba(26,28,35,0.9)", bordercolor="green", borderwidth=1, borderpad=3)
-fig1.add_annotation(x=design_rpm, y=T_at_design, xref="x", yref="y", text=f"<b>目標: {design_rpm:.0f} rpm</b>", showarrow=True, arrowhead=2, arrowcolor="orange", arrowsize=1, arrowwidth=2, ax=-50, ay=-70, font=dict(color="orange", size=12), bgcolor="rgba(26,28,35,0.9)", bordercolor="orange", borderwidth=1, borderpad=3)
-fig1.add_annotation(x=n_max_motor, y=T_at_max_n, xref="x", yref="y", text=f"<b>極速: {n_max_motor:.0f} rpm<br>{T_at_max_n:.1f} Nm</b>", showarrow=True, arrowhead=2, arrowcolor="purple", arrowsize=1, arrowwidth=2, ax=60, ay=-45, font=dict(color="#d8b4e2", size=12), bgcolor="rgba(26,28,35,0.9)", bordercolor="purple", borderwidth=1, borderpad=3)
+fig1.add_annotation(x=base_speed, y=T_peak, xref="x", yref="y", text=f"<b>基速: {base_speed:.0f} rpm</b>", showarrow=True, arrowhead=2, arrowcolor="green", ax=0, ay=-45, font=dict(color="lightgreen", size=12), bgcolor="rgba(26,28,35,0.9)", bordercolor="green", borderwidth=1)
+fig1.add_annotation(x=design_rpm, y=T_at_design, xref="x", yref="y", text=f"<b>目標: {design_rpm:.0f} rpm</b>", showarrow=True, arrowhead=2, arrowcolor="orange", ax=-50, ay=-70, font=dict(color="orange", size=12), bgcolor="rgba(26,28,35,0.9)", bordercolor="orange", borderwidth=1)
+fig1.add_annotation(x=n_max_motor, y=T_at_max_n, xref="x", yref="y", text=f"<b>極速: {n_max_motor:.0f} rpm</b>", showarrow=True, arrowhead=2, arrowcolor="purple", ax=60, ay=-45, font=dict(color="#d8b4e2", size=12), bgcolor="rgba(26,28,35,0.9)", bordercolor="purple", borderwidth=1)
 
 fig1.update_layout(legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5), margin=dict(l=80, r=110, t=100, b=20), height=550)
 st.plotly_chart(fig1, use_container_width=True)
@@ -872,7 +786,6 @@ st.markdown("---")
 
 # ================== 圖2：車輪扭矩 vs 車速 + 工作點 ==================
 st.markdown("## 📈 圖2：車輪扭矩 vs 車速 + 工作點")
-st.caption("淡藍色實線為最大車輪扭矩，紅色虛線為平路負載線（車輪側），綠色虛線為爬坡負載線。青色散點為行駛工況下的車輪需求扭矩 vs 車速，包含負扭矩（再生煞車）。")
 
 idx_design = np.argmin(np.abs(speed_kmh_flat - speed_kmh))
 T_design_flat = T_wheel_flat[idx_design]
@@ -882,148 +795,106 @@ T_wheel_peak = T_wheel_max.max()
 grid_step_wheel = T_wheel_peak / 4.0 if T_wheel_peak > 0 else 10
 y_min_raw_w = min(0, T_wheel_max.min(), T_wheel_flat.min())
 if "df_motor_operating_points" in st.session_state:
-    df_op = st.session_state.df_motor_operating_points
-    min_op_w = df_op['wheel_torque_Nm'].min()
-    if not np.isnan(min_op_w):
-        y_min_raw_w = min(y_min_raw_w, min_op_w)
+    min_op_w = st.session_state.df_motor_operating_points['wheel_torque_Nm'].min()
+    if not np.isnan(min_op_w): y_min_raw_w = min(y_min_raw_w, min_op_w)
 y_min_wheel = math.floor(y_min_raw_w / grid_step_wheel) * grid_step_wheel
 
 y_max_wheel = T_wheel_peak + grid_step_wheel
 if "df_motor_operating_points" in st.session_state:
-    max_op_w = df_op['wheel_torque_Nm'].max()
-    if not np.isnan(max_op_w) and max_op_w > y_max_wheel:
-        y_max_wheel = math.ceil(max_op_w / grid_step_wheel) * grid_step_wheel
+    max_op_w = st.session_state.df_motor_operating_points['wheel_torque_Nm'].max()
+    if not np.isnan(max_op_w) and max_op_w > y_max_wheel: y_max_wheel = math.ceil(max_op_w / grid_step_wheel) * grid_step_wheel
 
 num_ticks_w = int(round((y_max_wheel - y_min_wheel) / grid_step_wheel)) + 1
-all_y_ticks_w = [y_min_wheel + i * grid_step_wheel for i in range(num_ticks_w)]
-clean_y_ticks_w = [v for v in all_y_ticks_w if abs(v - T_wheel_peak) > (grid_step_wheel*0.1)]
-y_ticks_w = [round(v, 2) for v in clean_y_ticks_w]
+y_ticks_w = [round(v, 2) for v in [y_min_wheel + i * grid_step_wheel for i in range(num_ticks_w)] if abs(v - T_wheel_peak) > (grid_step_wheel*0.1)]
 
 fig2 = go.Figure()
 fig2.add_trace(go.Scatter(x=v_from_n, y=T_wheel_max, mode='lines', name='最大車輪扭矩', line=dict(color='dodgerblue', width=3)))
 fig2.add_trace(go.Scatter(x=speed_kmh_flat, y=T_wheel_flat, mode='lines', name='平路負載線', line=dict(color='red', width=3, dash='dash')))
 if T_wheel_climb is not None:
-    fig2.add_trace(go.Scatter(x=speed_kmh_climb, y=T_wheel_climb, mode='lines', name=f'爬坡負載線 ({grade_percent}%)', line=dict(color='green', width=3, dash='dot')))
+    fig2.add_trace(go.Scatter(x=speed_kmh_climb, y=T_wheel_climb, mode='lines', name=f'爬坡負載線', line=dict(color='green', width=3, dash='dot')))
 
 fig2.add_vline(x=speed_kmh, line_width=2, line_dash="dash", line_color="orange", opacity=0.9)
-fig2.add_trace(go.Scatter(x=[speed_kmh], y=[T_design_flat], mode='markers', name='目標最高車速', marker=dict(color='orange', size=10)))
-fig2.add_trace(go.Scatter(x=[v_max_motor], y=[T_at_vmax], mode='markers', name='馬達最高轉速對車速', marker=dict(color='purple', size=10)))
-
-intersections_flat_wheel = find_intersection(v_from_n, T_wheel_max, speed_kmh_flat, T_wheel_flat)
-for i, (x_cross, y_cross) in enumerate(intersections_flat_wheel):
-    fig2.add_trace(go.Scatter(x=[x_cross], y=[y_cross], mode='markers', name='平路交點' if i==0 else None, marker=dict(color='red', size=12, symbol='x'), showlegend=(i==0)))
-    fig2.add_annotation(x=x_cross, y=y_cross, text=f'{x_cross:.1f} km/h<br>{y_cross:.1f} Nm', showarrow=True, arrowhead=2, ax=55, ay=50, font=dict(size=11, color="white"), bgcolor="rgba(255,0,0,0.4)", bordercolor="red", borderwidth=1)
-
-if T_wheel_climb is not None:
-    intersections_climb_wheel = find_intersection(v_from_n, T_wheel_max, speed_kmh_climb, T_wheel_climb)
-    for i, (x_cross, y_cross) in enumerate(intersections_climb_wheel):
-        fig2.add_trace(go.Scatter(x=[x_cross], y=[y_cross], mode='markers', name='爬坡交點' if i==0 else None, marker=dict(color='green', size=12, symbol='x'), showlegend=(i==0)))
-        fig2.add_annotation(x=x_cross, y=y_cross, text=f'{x_cross:.1f} km/h<br>{y_cross:.1f} Nm', showarrow=True, arrowhead=2, ax=-55, ay=50, font=dict(size=11, color="white"), bgcolor="rgba(0,128,0,0.4)", bordercolor="green", borderwidth=1)
+fig2.add_trace(go.Scatter(x=[speed_kmh, v_max_motor], y=[T_design_flat, T_at_vmax], mode='markers', name='關鍵點', marker=dict(color='orange', size=10)))
 
 if "df_motor_operating_points" in st.session_state:
+    df_op = st.session_state.df_motor_operating_points
     fig2.add_trace(go.Scatter(x=df_op['speed_kmh'], y=df_op['wheel_torque_Nm'], mode='markers', marker=dict(size=4, color='cyan', opacity=0.6, symbol='circle'), name='工作點', showlegend=True))
 
-x_max = max(v_max_motor, speed_kmh) * 1.15
-if x_max <= 0: x_max = 100
+x_max = max(v_max_motor, speed_kmh) * 1.15 if max(v_max_motor, speed_kmh) > 0 else 100
 fig2.update_yaxes(title_text="車輪扭矩 (Nm)", range=[y_min_wheel, y_max_wheel], tickvals=y_ticks_w, tickfont=dict(color='white'), zeroline=True, zerolinecolor='gray', zerolinewidth=1.5)
 fig2.update_xaxes(title_text="車速 (km/h)", range=[0, x_max], tickfont=dict(color='white'), zeroline=True, zerolinecolor='gray', zerolinewidth=1.5)
 
-# ================= 最上層獨立標籤 =================
 fig2.add_annotation(x=0, y=T_wheel_peak, xref="x", yref="y", text=f"<b>{T_wheel_peak:.1f}</b>", showarrow=False, xanchor="right", xshift=-15, font=dict(color="dodgerblue", size=14), bgcolor="rgba(26,28,35,0.9)", bordercolor="dodgerblue", borderwidth=1, borderpad=4)
-fig2.add_annotation(x=speed_kmh, y=T_design_flat, xref="x", yref="y", text=f"<b>目標: {speed_kmh:.0f} km/h</b>", showarrow=True, arrowhead=2, arrowcolor="orange", arrowsize=1, arrowwidth=2, ax=-55, ay=-65, font=dict(color="orange", size=12), bgcolor="rgba(26,28,35,0.9)", bordercolor="orange", borderwidth=1, borderpad=3)
-fig2.add_annotation(x=v_max_motor, y=T_at_vmax, xref="x", yref="y", text=f"<b>極速: {v_max_motor:.0f} km/h<br>{T_at_vmax:.1f} Nm</b>", showarrow=True, arrowhead=2, arrowcolor="purple", arrowsize=1, arrowwidth=2, ax=65, ay=-45, font=dict(color="#d8b4e2", size=12), bgcolor="rgba(26,28,35,0.9)", bordercolor="purple", borderwidth=1, borderpad=3)
+fig2.add_annotation(x=speed_kmh, y=T_design_flat, xref="x", yref="y", text=f"<b>目標: {speed_kmh:.0f} km/h</b>", showarrow=True, arrowhead=2, arrowcolor="orange", ax=-55, ay=-65, font=dict(color="orange", size=12), bgcolor="rgba(26,28,35,0.9)", bordercolor="orange", borderwidth=1)
+fig2.add_annotation(x=v_max_motor, y=T_at_vmax, xref="x", yref="y", text=f"<b>極速: {v_max_motor:.0f} km/h</b>", showarrow=True, arrowhead=2, arrowcolor="purple", ax=65, ay=-45, font=dict(color="#d8b4e2", size=12), bgcolor="rgba(26,28,35,0.9)", bordercolor="purple", borderwidth=1)
 
 fig2.update_layout(legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5), margin=dict(l=80, r=110, t=100, b=20), height=550)
 st.plotly_chart(fig2, use_container_width=True)
 st.markdown("---")
 
-# ================== 圖3：速度與位移 vs 時間 ==================
+# ================== 圖3/圖4 區塊 ==================
 st.markdown("## 📈 圖3：加速性能（速度與位移 vs 時間）")
-st.caption("藍色實線為車速隨時間變化，紅色虛線為位移隨時間變化。垂直線標註實際達到50 km/h和最高車速的時間，以及目標加速時間。")
-
 fig3 = make_subplots(specs=[[{"secondary_y": True}]])
-fig3.add_trace(go.Scatter(x=time_acc, y=speed_acc, mode='lines', name='車速 (km/h)', line=dict(color='dodgerblue', width=3)), secondary_y=False)
-fig3.add_trace(go.Scatter(x=time_acc, y=disp_acc, mode='lines', name='位移 (m)', line=dict(color='red', width=2, dash='dash')), secondary_y=True)
-
-idx_50 = np.argmax(speed_acc >= 50)
-if idx_50 > 0:
-    t_50 = time_acc[idx_50]
-    fig3.add_vline(x=t_50, line_width=1, line_dash="dot", line_color="orange", opacity=0.7)
-    fig3.add_annotation(x=t_50, y=50, text=f"實際50km/h @ {t_50:.1f}s", showarrow=True, arrowhead=2, ax=20, ay=-30)
-idx_max = np.argmax(speed_acc >= speed_kmh * 0.99)
-if idx_max > 0:
-    t_max = time_acc[idx_max]
-    fig3.add_vline(x=t_max, line_width=1, line_dash="dot", line_color="green", opacity=0.7)
-    fig3.add_annotation(x=t_max, y=speed_kmh, text=f"實際{int(speed_kmh)}km/h @ {t_max:.1f}s", showarrow=True, arrowhead=2, ax=20, ay=30)
-fig3.add_vline(x=accel_time_0to50, line_width=1, line_dash="dot", line_color="purple", opacity=0.7)
-fig3.add_annotation(x=accel_time_0to50, y=50, text=f"目標50km/h @ {accel_time_0to50:.1f}s", showarrow=True, arrowhead=2, ax=20, ay=-50, font=dict(color="purple"))
-fig3.add_vline(x=accel_time_full, line_width=1, line_dash="dot", line_color="brown", opacity=0.7)
-fig3.add_annotation(x=accel_time_full, y=speed_kmh, text=f"目標最高車速 @ {accel_time_full:.1f}s", showarrow=True, arrowhead=2, ax=20, ay=-70, font=dict(color="brown"))
-
-fig3.update_layout(legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5), margin=dict(l=20, r=20, t=40, b=20), height=400)
-fig3.update_xaxes(title_text="時間 (秒)")
-fig3.update_yaxes(title_text="車速 (km/h)", secondary_y=False)
-fig3.update_yaxes(title_text="位移 (m)", secondary_y=True)
+fig3.add_trace(go.Scatter(x=time_acc, y=speed_acc, mode='lines', name='車速', line=dict(color='dodgerblue', width=3)), secondary_y=False)
+fig3.add_trace(go.Scatter(x=time_acc, y=disp_acc, mode='lines', name='位移', line=dict(color='red', width=2, dash='dash')), secondary_y=True)
+fig3.update_layout(height=400, margin=dict(l=20, r=20, t=40, b=20))
 st.plotly_chart(fig3, use_container_width=True)
 st.markdown("---")
 
-# ================== 圖4：行駛工況（車速與加速度 vs 時間）==================
 if "df_wltc_clean" in st.session_state:
     st.markdown("## 📈 圖4：行駛工況（車速與加速度 vs 時間）")
-    st.caption("藍色實線為車速 (km/h)，紅色虛線為加速度 (m/s²)。可觀察工況中的加速與減速行為。")
-    
     df_wltc_plot = st.session_state.df_wltc_clean
-    
     fig4 = make_subplots(specs=[[{"secondary_y": True}]])
     fig4.add_trace(go.Scatter(x=df_wltc_plot['time'], y=df_wltc_plot['speed_kmh'], mode='lines', name='車速', line=dict(color='dodgerblue', width=2)), secondary_y=False)
     fig4.add_trace(go.Scatter(x=df_wltc_plot['time'], y=df_wltc_plot['accel_ms2'], mode='lines', name='加速度', line=dict(color='red', width=2, dash='dash')), secondary_y=True)
-    
-    fig4.update_xaxes(title_text="時間 (秒)")
-    fig4.update_yaxes(title_text="車速 (km/h)", secondary_y=False)
-    fig4.update_yaxes(title_text="加速度 (m/s²)", secondary_y=True)
     fig4.update_layout(height=400, margin=dict(l=20, r=20, t=40, b=20))
     st.plotly_chart(fig4, use_container_width=True)
     st.markdown("---")
 
-# ================== 圖5：理論能耗分析（牽引力積分）==================
+# ================== 圖5：理論能耗分析 (核心精準版) ==================
 if "df_wltc_clean" in st.session_state and SCIPY_AVAILABLE:
-    st.markdown("## 📈 圖5：理論能耗分析（物理阻力與回收拆解）")
-    st.caption("基於行駛工況計算瞬時功率 (W) 與累積能量 (Wh)，並將能量區分為「驅動耗能」與「動能回收」。此為純物理理論值，不含馬達及傳動損耗。")
+    st.markdown("## 📈 圖5：理論能耗分析 (含傳動與馬達效率)")
+    st.caption("基於行駛工況與物理阻力，並帶入**齒輪箱與馬達效率損耗**計算出的「電池端理論能耗」，可直接與論文中的 Theoretical Energy Consumption 進行對比。")
     
     df_energy = st.session_state.df_wltc_clean.copy()
     
-    wh_per_km, total_dist_km, total_energy_wh, drive_energy_wh, regen_energy_wh, times, power_w, energy_cum = compute_theoretical_energy_consumption(
-        df_energy, total_mass, area, cd, fr
+    # 呼叫重構後的能耗計算函數 (傳入 gear_eff_val 與 motor_eff_val 進行真實損耗估算)
+    gear_eff_val = gear_eff if 'gear_eff' in locals() else 95.0
+    motor_eff_val = motor_eff if 'motor_eff' in locals() else 90.0
+    
+    wh_per_km_batt, wh_per_km_wheel, total_dist_km, total_energy_wh, drive_energy_wh, regen_energy_wh, times, power_batt_w, energy_cum = compute_theoretical_energy_consumption(
+        df_energy, total_mass, area, cd, fr, gear_eff_val, motor_eff_val
     )
     
-    # 顯示數值結果 (加入能耗拆解)
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("總行駛距離", f"{total_dist_km:.3f} km")
-    col2.metric("驅動耗能", f"{drive_energy_wh:.2f} Wh")
-    col3.metric("理想回收", f"{regen_energy_wh:.2f} Wh")
-    col4.metric("淨單位能耗", f"{wh_per_km:.2f} Wh/km")
+    # 建立 5 欄顯示詳細對比數值
+    col1, col2, col3 = st.columns(3)
+    col1.metric("🏁 總行駛距離", f"{total_dist_km:.3f} km")
+    col2.metric("⚙️ 輪上淨能耗 (純物理)", f"{wh_per_km_wheel:.2f} Wh/km")
+    col3.metric("🔋 電池端理論能耗 (對應論文)", f"{wh_per_km_batt:.2f} Wh/km")
     
-    # 繪製瞬時功率與累積能量
+    st.markdown("") # 排版間距
+    
+    col4, col5, col6 = st.columns(3)
+    col4.metric("📈 驅動耗電 (電池端)", f"{drive_energy_wh:.2f} Wh")
+    col5.metric("📉 回收充電 (電池端)", f"{regen_energy_wh:.2f} Wh")
+    col6.metric("⚡ 總淨耗電 (電池端)", f"{total_energy_wh:.2f} Wh")
+    
+    # 繪製電池端瞬時功率與累積能量
     fig5 = make_subplots(specs=[[{"secondary_y": True}]])
     
     # 將功率拆分為正與負，分開填色顯示
-    power_pos = np.maximum(power_w, 0)
-    power_neg = np.minimum(power_w, 0)
-    fig5.add_trace(go.Scatter(x=times, y=power_pos, mode='lines', fill='tozeroy', name='驅動功率 (W)', line=dict(color='crimson', width=1)), secondary_y=False)
-    fig5.add_trace(go.Scatter(x=times, y=power_neg, mode='lines', fill='tozeroy', name='回收功率 (W)', line=dict(color='seagreen', width=1)), secondary_y=False)
+    power_pos = np.maximum(power_batt_w, 0)
+    power_neg = np.minimum(power_batt_w, 0)
+    fig5.add_trace(go.Scatter(x=times, y=power_pos, mode='lines', fill='tozeroy', name='驅動輸出 (W)', line=dict(color='crimson', width=1)), secondary_y=False)
+    fig5.add_trace(go.Scatter(x=times, y=power_neg, mode='lines', fill='tozeroy', name='動能回收 (W)', line=dict(color='seagreen', width=1)), secondary_y=False)
     
     # 累積能量曲線
-    fig5.add_trace(go.Scatter(x=times, y=energy_cum, mode='lines', name='累積淨能量 (Wh)', line=dict(color='gold', width=3, dash='solid')), secondary_y=True)
+    fig5.add_trace(go.Scatter(x=times, y=energy_cum, mode='lines', name='累積淨耗電 (Wh)', line=dict(color='gold', width=3, dash='solid')), secondary_y=True)
     
-    fig5.update_xaxes(title_text="時間 (秒)")
-    fig5.update_yaxes(title_text="瞬時功率 (W)", secondary_y=False)
-    fig5.update_yaxes(title_text="累積能量 (Wh)", secondary_y=True)
+    fig5.update_xaxes(title_text="時間 (秒)", zeroline=True, zerolinecolor='gray')
+    fig5.update_yaxes(title_text="瞬時電池功率 (W)", secondary_y=False, zeroline=True, zerolinecolor='gray')
+    fig5.update_yaxes(title_text="累積耗電 (Wh)", secondary_y=True, zeroline=False)
     fig5.update_layout(height=450, margin=dict(l=20, r=20, t=40, b=20), legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5))
     st.plotly_chart(fig5, use_container_width=True)
     
-    st.caption("💡 提示：在比較真實底盤動力計數據時，由於實際動能回收無法達到 100%，真實能耗通常會介於「淨單位能耗」與只算驅動的能耗之間。")
-    
-elif "df_wltc_clean" in st.session_state and not SCIPY_AVAILABLE:
-    st.warning("⚠️ 未安裝 SciPy，無法進行理論能耗積分。請執行 `pip install scipy` 以啟用此功能。")
-
-st.markdown("---")
+    st.info("💡 **工程洞察：** 論文中的實驗能耗 (如 34.2 Wh/km) 通常高於此處的「電池端理論能耗」，是因為現實中的動能回收 (Regen) 無法達到 100% 的理想效率，且有控制器的待機損耗。您可以透過調降側邊欄的馬達效率來模擬逼近實驗值。")
