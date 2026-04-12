@@ -395,19 +395,25 @@ st.title("⚡ 電動載具動力系統估算 (WLTC 工況覆蓋分析)")
 # ---------- 側邊欄（輸入參數）----------
 with st.sidebar:
     st.header("🚗 整車參數規格")
-    vehicle_type = st.selectbox("車種", ['小型電動車', '電動機車', '電動三輪車', '高爾夫球車'], index=1)
+    
+    # 車重與載重
     weight = st.number_input("車重 (kg, 不含電池)", min_value=50, value=98, step=10)
     load = st.number_input("載重 (kg)", min_value=0, value=63, step=10)
     total_mass = weight + load
     st.caption(f"總質量: {total_mass} kg")
 
+    # 目標車速
     speed_kmh = st.number_input("目標最高車速 (km/h)", min_value=10, value=75, step=5)
     speed_ms = speed_kmh / 3.6
 
-    area = st.number_input("迎風面積 (m²)", min_value=0.3, value=0.61, step=0.05, format="%.2f")
+    # 迎風面積與空氣阻力
+    st.subheader("🌬️ 阻力與環境參數設定")
+    area = st.number_input("迎風面積 A (m²)", min_value=0.1, value=0.61, step=0.01, format="%.2f")
+    cd = st.number_input("風阻係數 Cd", min_value=0.1, max_value=2.0, value=0.50, step=0.01, format="%.2f", help="一般機車約 0.5~0.6，對應論文請輸入 0.6 或 0.7")
+    
+    # 滾動阻力
+    fr = st.number_input("滾動阻力係數 fr", min_value=0.001, max_value=0.05, value=0.015, step=0.001, format="%.3f", help="一般市售胎約 0.015。若要對應論文可輸入 0.007")
 
-    cd = get_cd_by_vehicle(vehicle_type)
-    fr = FR
     st.session_state.cd = cd
     st.session_state.fr = fr
 
