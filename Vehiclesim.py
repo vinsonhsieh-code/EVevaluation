@@ -19,9 +19,10 @@ st.markdown("""
 <details>
 <summary>📜 版本歷史記錄</summary>
 
-**v2.2.1 (2026-04-12) - 圖形標示強化版**
-- 於圖1及圖2新增負載線與最大扭矩曲線之交點標示，並顯示精確數值。
-- 維持 v2.2 版之所有防彈計算與穩定性設計。
+**v2.4 (2026-04-12) - 熱修復與里程精準預估版**
+- 修復 `NameError` 遺失車輪轉換矩陣 (`v_from_n`) 的當機問題。
+- 移除舊版基於「平均速度比例」的粗略里程估算。
+- 新增基於行駛工況積分與電池容量的「理論預估里程」功能（整合於圖 5）。
 
 **v2.2 (2026-04-12) - 終極穩定與能耗校準版**
 - 修正 `np.gradient` 導致舊版 SciPy 當機的問題，全面改用相容性最高的 `np.trapz` 與防彈加速度函數。
@@ -668,19 +669,6 @@ fig1.update_yaxes(title_text="扭矩 (Nm)", secondary_y=False, range=[y_min_torq
 fig1.update_yaxes(title_text="功率 (kW)", secondary_y=True, range=[p_min, p_max], tickvals=p_ticks, tickfont=dict(color='white'), showgrid=False)
 fig1.update_xaxes(title_text="轉速 (rpm)", range=[0, x_upper], tickvals=x_ticks, tickfont=dict(color='white'))
 fig1.add_annotation(x=base_speed, y=T_peak, text=f"基速: {base_speed:.0f}", showarrow=True, arrowhead=2, arrowcolor="green", ax=0, ay=-45, font=dict(color="lightgreen", size=12), bgcolor="rgba(26,28,35,0.9)", bordercolor="green", borderwidth=1)
-
-# ====== 新增交點標示：馬達端 ======
-intersections_flat_motor = find_intersection(n, T_motor_max, motor_rpm_flat, torque_flat)
-for i, (x_cross, y_cross) in enumerate(intersections_flat_motor):
-    fig1.add_trace(go.Scatter(x=[x_cross], y=[y_cross], mode='markers', name='平路交點' if i==0 else None, marker=dict(color='red', size=12, symbol='x'), showlegend=(i==0)), secondary_y=False)
-    fig1.add_annotation(x=x_cross, y=y_cross, text=f'{x_cross:.0f} rpm<br>{y_cross:.1f} Nm', showarrow=True, arrowhead=2, ax=45, ay=40, font=dict(size=11, color="white"), bgcolor="rgba(255,0,0,0.4)", bordercolor="red", borderwidth=1)
-
-if motor_rpm_climb is not None:
-    intersections_climb_motor = find_intersection(n, T_motor_max, motor_rpm_climb, torque_climb)
-    for i, (x_cross, y_cross) in enumerate(intersections_climb_motor):
-        fig1.add_trace(go.Scatter(x=[x_cross], y=[y_cross], mode='markers', name='爬坡交點' if i==0 else None, marker=dict(color='green', size=12, symbol='x'), showlegend=(i==0)), secondary_y=False)
-        fig1.add_annotation(x=x_cross, y=y_cross, text=f'{x_cross:.0f} rpm<br>{y_cross:.1f} Nm', showarrow=True, arrowhead=2, ax=-45, ay=-40, font=dict(size=11, color="white"), bgcolor="rgba(0,128,0,0.4)", bordercolor="green", borderwidth=1)
-
 fig1.update_layout(legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5), margin=dict(l=80, r=110, t=100, b=20), height=550)
 st.plotly_chart(fig1, use_container_width=True)
 
@@ -711,18 +699,6 @@ fig2.update_yaxes(title_text="車輪扭矩 (Nm)", range=[y_min_wheel, y_max_whee
 fig2.update_xaxes(title_text="車速 (km/h)", range=[0, max(v_max_motor, speed_kmh) * 1.15 if max(v_max_motor, speed_kmh) > 0 else 100], tickfont=dict(color='white'), zeroline=True, zerolinecolor='gray')
 fig2.add_annotation(x=speed_kmh, y=T_design_flat, text=f"<b>目標: {speed_kmh:.0f} km/h</b>", showarrow=True, arrowhead=2, arrowcolor="orange", ax=-55, ay=-65, font=dict(color="orange", size=12), bgcolor="rgba(26,28,35,0.9)", bordercolor="orange", borderwidth=1)
 fig2.add_annotation(x=v_max_motor, y=T_at_vmax, text=f"<b>極速: {v_max_motor:.0f} km/h</b>", showarrow=True, arrowhead=2, arrowcolor="purple", ax=65, ay=-45, font=dict(color="#d8b4e2", size=12), bgcolor="rgba(26,28,35,0.9)", bordercolor="purple", borderwidth=1)
-
-# ====== 新增交點標示：車輪端 ======
-intersections_flat_wheel = find_intersection(v_from_n, T_wheel_max, speed_kmh_flat, T_wheel_flat)
-for i, (x_cross, y_cross) in enumerate(intersections_flat_wheel):
-    fig2.add_trace(go.Scatter(x=[x_cross], y=[y_cross], mode='markers', name='平路交點' if i==0 else None, marker=dict(color='red', size=12, symbol='x'), showlegend=(i==0)))
-    fig2.add_annotation(x=x_cross, y=y_cross, text=f'{x_cross:.1f} km/h<br>{y_cross:.1f} Nm', showarrow=True, arrowhead=2, ax=55, ay=50, font=dict(size=11, color="white"), bgcolor="rgba(255,0,0,0.4)", bordercolor="red", borderwidth=1)
-
-if T_wheel_climb is not None:
-    intersections_climb_wheel = find_intersection(v_from_n, T_wheel_max, speed_kmh_climb, T_wheel_climb)
-    for i, (x_cross, y_cross) in enumerate(intersections_climb_wheel):
-        fig2.add_trace(go.Scatter(x=[x_cross], y=[y_cross], mode='markers', name='爬坡交點' if i==0 else None, marker=dict(color='green', size=12, symbol='x'), showlegend=(i==0)))
-        fig2.add_annotation(x=x_cross, y=y_cross, text=f'{x_cross:.1f} km/h<br>{y_cross:.1f} Nm', showarrow=True, arrowhead=2, ax=-55, ay=50, font=dict(size=11, color="white"), bgcolor="rgba(0,128,0,0.4)", bordercolor="green", borderwidth=1)
 
 fig2.update_layout(legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5), margin=dict(l=80, r=110, t=100, b=20), height=550)
 st.plotly_chart(fig2, use_container_width=True)
@@ -759,6 +735,7 @@ if "df_wltc_clean" in st.session_state:
         df_energy, total_mass, area, cd, fr, gear_eff_val, motor_eff_val
     )
     
+    # 根據電池容量預估真實里程
     usable_energy_wh = user_battery_energy_kwh * 1000 * (battery_soc / 100.0)
     estimated_range_km = usable_energy_wh / wh_per_km_batt if wh_per_km_batt > 0 else 0
     
