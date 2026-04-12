@@ -304,8 +304,8 @@ def compute_theoretical_energy_consumption(df_cycle, mass, area, cd, fr):
     P_inst = F_trac * speeds_ms               # 瞬時功率 (W)
     
     # 積分
-    energy_wh = np.trapz(P_inst, times) / 3600.0   # Wh
-    distance_km = np.trapz(speeds_ms, times) / 1000.0   # km
+    energy_wh = np.trapezoid(P_inst, times) / 3600.0   # Wh
+    distance_km = np.trapezoid(speeds_ms, times) / 1000.0   # km
     
     wh_per_km = energy_wh / distance_km if distance_km > 0 else 0
     return wh_per_km, distance_km, energy_wh, times, P_inst
