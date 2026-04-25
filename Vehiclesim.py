@@ -5,6 +5,7 @@ import math
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from io import BytesIO
+import re
 
 # ================== 檢查 SciPy 可用性 ==================
 try:
@@ -20,20 +21,19 @@ st.markdown("""
 <details>
 <summary>📜 版本歷史記錄</summary>
 
-**v2.3 (2026-04-25) - 效率地圖獨立顯示版**
-- 新增「讀取馬達效率地圖」功能：上傳 CSV（轉速、扭矩、效率），自動建立二維插值模型。
-- **圖5**：純理論能耗分析（瞬時功率、累積耗電、里程估算）。
-- **圖6**：獨立顯示馬達效率地圖等高線 + 行駛工況工作點（散點顏色對應效率）。
-- 兩個圖表的色條已分開並適當拉開，避免視覺混亂。
-- 圖5下方保留詳細的理論計算公式說明。
-- 原有圖1–4完全保留。
+**v2.4 (2026-04-25) - 效率地圖寬格式支援版**
+- 修正「寬格式」效率地圖讀取錯誤：支援「RPM + 扭矩百分比（10%~100%）」的 CSV 格式。
+- 新增**馬達峰值扭矩輸入框**，用於將扭矩百分比換算為實際扭矩值。
+- 自動偵測並轉換為長格式 (rpm, torque, efficiency)，確保等高線與工作點正確顯示。
+- 圖6獨立顯示效率地圖，兩個色條已分開且不重疊。
+
+**v2.3 (2026-04-25) - 效率地圖整合版**
+- 新增讀取馬達效率地圖功能。
+- 能耗計算改用查表效率。
 
 **v2.2 (2026-04-12) - 終極穩定與能耗校準版**
-- 修正 `np.gradient` 導致舊版 SciPy 當機的問題，全面改用相容性最高的 `np.trapz` 與防彈加速度函數。
-- 引入強制型別轉換 `pd.to_numeric`，防止上傳的 CSV 夾帶字串導致數學運算崩潰。
+- 修正 `np.gradient` 導致舊版 SciPy 當機的問題。
 - 正式納入齒輪與馬達效率損耗。
-- 區分「輪上能耗」與「電池端理論能耗 (對應論文)」，並獨立拆解動能回收數據。
-- 里程估算與行駛工況積分模組深度整合，獨立顯示可用能量 (Wh) 與理論預估里程 (km)。
 
 **v2.1 (2026-04-11)**
 - 新增「讀取馬達TN曲線」模式。
@@ -277,7 +277,9 @@ def compute_motor_operating_points_from_wltc(df_wltc, mass, area, cd, fr, wheel_
 
 # ================== 理論能耗計算函數（支援效率地圖）==================
 def build_efficiency_interpolator(df_eff):
-    """從效率地圖 CSV 建立插值函數 (轉速, 扭矩) -> 效率 (%)"""
+    """從效率地圖 CSV 建立插值函數 (轉速, 扭矩) -> 效率 (%)
+       輸入 df_eff 必須包含三欄: rpm, torque, efficiency
+    """
     if df_eff is None:
         return None
     rpm = df_eff['rpm'].values
@@ -578,32 +580,88 @@ with st.sidebar:
         motor_eff = st.number_input("馬達效率 (%)", min_value=0.0, max_value=100.0, value=90.0, step=1.0,
                                     help="固定工作點下的馬達效率，用於里程估計，也會顯示在馬達規格中。")
         
-        # ---------- 新增：馬達效率地圖上傳 ----------
+        # ---------- 效率地圖上傳（支援寬格式）----------
         st.markdown("#### 📊 馬達效率地圖 (選用)")
-        eff_file = st.file_uploader("上傳效率地圖 CSV (轉速,扭矩,效率)", type=["csv"], key="eff_map")
+        eff_file = st.file_uploader("上傳效率地圖 CSV", type=["csv"], key="eff_map")
         eff_interpolator = None
-        df_eff = None
+        df_eff_converted = None  # 標準化後的長格式 DataFrame
+
         if eff_file is not None and SCIPY_AVAILABLE:
             try:
-                df_eff = pd.read_csv(eff_file)
-                # 自動識別欄位
-                rpm_candidates = [c for c in df_eff.columns if 'rpm' in c.lower() or '轉速' in c]
-                torque_candidates = [c for c in df_eff.columns if 'torque' in c.lower() or '扭矩' in c or '扭力' in c]
-                eff_candidates = [c for c in df_eff.columns if 'eff' in c.lower() or '效率' in c]
-                if rpm_candidates and torque_candidates and eff_candidates:
-                    rpm_col = rpm_candidates[0]
-                    torque_col = torque_candidates[0]
-                    eff_col = eff_candidates[0]
+                df_eff_raw = pd.read_csv(eff_file)
+                st.info(f"原始檔案欄位：{list(df_eff_raw.columns)}")
+                
+                # 偵測是否為寬格式 (第一欄像是轉速，其餘欄位名稱含 '%' 或 '效率')
+                first_col = df_eff_raw.columns[0]
+                other_cols = df_eff_raw.columns[1:]
+                is_wide_format = False
+                # 檢查第一欄名稱是否暗示轉速
+                if any(key in first_col.lower() for key in ['rpm', '轉速', 'speed']):
+                    # 檢查其他欄位是否包含百分比或效率字樣
+                    if any(('%' in col) or ('效率' in col) for col in other_cols):
+                        is_wide_format = True
+                
+                if is_wide_format:
+                    st.warning("偵測到「寬格式」效率地圖 (轉速 + 扭矩百分比欄位)。請輸入馬達峰值扭矩以換算實際扭矩值。")
+                    # 獲取峰值扭矩：優先從手動輸入取得，若為自動估算則暫時需要用戶提供
+                    if est_mode == '手動輸入' and 'manual_peak_torque' in locals() and manual_peak_torque is not None:
+                        default_peak_torque = manual_peak_torque
+                    else:
+                        default_peak_torque = 18.0  # 預設值
+                    peak_torque_input = st.number_input("馬達峰值扭矩 (Nm) - 用於效率地圖換算", 
+                                                        min_value=0.1, value=default_peak_torque, step=0.5, key="eff_map_peak_torque")
+                    
+                    # 解析轉速欄位
+                    rpm_col = first_col
+                    df_eff_raw[rpm_col] = pd.to_numeric(df_eff_raw[rpm_col], errors='coerce')
+                    df_eff_raw = df_eff_raw.dropna(subset=[rpm_col])
+                    
+                    records = []
+                    for col in other_cols:
+                        # 從欄位名稱提取百分比數值 (例如 "10%效率" -> 10, "20% efficiency" -> 20)
+                        match = re.search(r'(\d+(?:\.\d+)?)', col)
+                        if match:
+                            percent = float(match.group(1))
+                        else:
+                            continue
+                        torque_actual = peak_torque_input * (percent / 100.0)
+                        # 取得該欄效率值，清理可能的 HTML entity
+                        eff_series = df_eff_raw[col].astype(str).str.replace(r'&nbsp;', '', regex=True)
+                        eff_series = pd.to_numeric(eff_series, errors='coerce')
+                        for idx, row in df_eff_raw.iterrows():
+                            rpm_val = row[rpm_col]
+                            eff_val = eff_series.iloc[idx]
+                            if not np.isnan(rpm_val) and not np.isnan(eff_val) and eff_val >= 0:
+                                records.append({'rpm': rpm_val, 'torque': torque_actual, 'efficiency': eff_val})
+                    df_eff_converted = pd.DataFrame(records)
+                    st.success(f"已將寬格式轉換為長格式，共 {len(df_eff_converted)} 筆資料 (扭矩範圍 {df_eff_converted['torque'].min():.1f} ~ {df_eff_converted['torque'].max():.1f} Nm)")
                 else:
-                    # 預設前三欄
-                    rpm_col, torque_col, eff_col = df_eff.columns[0], df_eff.columns[1], df_eff.columns[2]
-                df_eff = df_eff[[rpm_col, torque_col, eff_col]].copy()
-                df_eff.columns = ['rpm', 'torque', 'efficiency']
-                df_eff = df_eff.dropna()
-                eff_interpolator = build_efficiency_interpolator(df_eff)
-                st.success(f"成功讀取效率地圖，共 {len(df_eff)} 筆資料。將使用插值計算即時效率。")
+                    # 原本的三欄模式
+                    rpm_candidates = [c for c in df_eff_raw.columns if 'rpm' in c.lower() or '轉速' in c]
+                    torque_candidates = [c for c in df_eff_raw.columns if 'torque' in c.lower() or '扭矩' in c or '扭力' in c]
+                    eff_candidates = [c for c in df_eff_raw.columns if 'eff' in c.lower() or '效率' in c]
+                    if rpm_candidates and torque_candidates and eff_candidates:
+                        rpm_col = rpm_candidates[0]
+                        torque_col = torque_candidates[0]
+                        eff_col = eff_candidates[0]
+                    else:
+                        # 預設前三欄
+                        rpm_col, torque_col, eff_col = df_eff_raw.columns[0], df_eff_raw.columns[1], df_eff_raw.columns[2]
+                    df_eff_converted = df_eff_raw[[rpm_col, torque_col, eff_col]].copy()
+                    df_eff_converted.columns = ['rpm', 'torque', 'efficiency']
+                    df_eff_converted = df_eff_converted.dropna()
+                    st.success(f"成功讀取標準格式效率地圖，共 {len(df_eff_converted)} 筆資料")
+                
+                # 建立插值器
+                if df_eff_converted is not None and len(df_eff_converted) > 0:
+                    eff_interpolator = build_efficiency_interpolator(df_eff_converted)
+                    st.session_state.df_eff_converted = df_eff_converted
+                else:
+                    st.error("無有效效率數據")
             except Exception as e:
                 st.error(f"讀取效率地圖失敗: {e}")
+        elif eff_file is not None and not SCIPY_AVAILABLE:
+            st.error("需要安裝 SciPy 才能使用效率地圖功能。")
 
     with st.expander("🔹 齒輪 (Gear)", expanded=True):
         gear_option = st.radio("減速比", ['自動估算', '手動輸入'], index=1)
@@ -946,7 +1004,7 @@ if "df_wltc_clean" in st.session_state:
     st.plotly_chart(fig4, use_container_width=True)
     st.markdown("---")
 
-# ================== 圖5：理論能耗分析（純能耗，不含效率地圖） ==================
+# ================== 圖5：理論能耗分析 ==================
 if "df_wltc_clean" in st.session_state and SCIPY_AVAILABLE:
     st.markdown("## 📈 圖5：理論能耗分析與里程預估")
     st.caption("本模組基於行駛工況積分計算能耗，並根據側邊欄設定的**電池容量與 SOC** 進行續航里程預估。")
@@ -957,7 +1015,6 @@ if "df_wltc_clean" in st.session_state and SCIPY_AVAILABLE:
     gear_eff_val = gear_eff if 'gear_eff' in locals() else 95.0
     motor_eff_val = motor_eff if 'motor_eff' in locals() else 90.0
     
-    # 呼叫能耗計算函數，傳入效率地圖插值器（若有）
     wh_per_km_batt, wh_per_km_wheel, total_dist_km, total_energy_wh, drive_energy_wh, regen_energy_wh, times, power_batt_w, energy_cum = compute_theoretical_energy_consumption(
         df_energy, total_mass, area, cd, fr, gear_eff_val, motor_eff_val, eff_interpolator, df_operating
     )
@@ -976,7 +1033,6 @@ if "df_wltc_clean" in st.session_state and SCIPY_AVAILABLE:
     cc2.metric("🎯 理論預估里程", f"{estimated_range_km:.1f} km", delta=f"基於 {user_battery_energy_kwh:.1f}kWh 電池")
     cc3.metric("📈 驅動耗電 (電池端)", f"{drive_energy_wh:.1f} Wh")
     
-    # 繪製電池端瞬時功率與累積能量
     fig5 = make_subplots(specs=[[{"secondary_y": True}]])
     power_pos = np.maximum(power_batt_w, 0)
     power_neg = np.minimum(power_batt_w, 0)
@@ -989,7 +1045,6 @@ if "df_wltc_clean" in st.session_state and SCIPY_AVAILABLE:
     fig5.update_layout(height=450, margin=dict(l=20, r=20, t=40, b=20), legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5))
     st.plotly_chart(fig5, use_container_width=True)
     
-    # ================== 圖5下方：公式說明區塊 ==================
     with st.expander("📐 理論能耗計算公式說明", expanded=True):
         st.markdown(r"""
         **1. 行駛阻力 (N)**  
@@ -1024,51 +1079,55 @@ if "df_wltc_clean" in st.session_state and SCIPY_AVAILABLE:
         - 預估里程 (km)：$\text{Range} = \frac{E_{\text{usable}}}{\text{EC}}$，其中 $E_{\text{usable}} = E_{\text{battery}} \times \text{SOC} / 100$
 
         **7. 離散積分方法**  
-        使用 SciPy 的 `integrate.trapezoid` 或 NumPy 的 `np.trapz` 進行梯形法數值積分，確保在非等間隔時間序列下仍精確。
+        使用 SciPy 的 `integrate.trapezoid` 或 NumPy 的 `np.trapz` 進行梯形法數值積分。
         """)
     st.markdown("---")
 
 # ================== 圖6：馬達效率地圖與工作點（獨立顯示）==================
-if "df_wltc_clean" in st.session_state and SCIPY_AVAILABLE and eff_interpolator is not None and df_eff is not None and df_operating is not None:
-    st.markdown("## 📈 圖6：馬達效率地圖與工作點分佈")
-    st.caption("等高線為效率地圖（%），散點為行駛工況下的馬達操作點，顏色代表該點的效率值。")
-    
-    rpm_vals = df_eff['rpm'].values
-    torque_vals = df_eff['torque'].values
-    eff_vals = df_eff['efficiency'].values
-    
-    rpm_grid = np.linspace(rpm_vals.min(), rpm_vals.max(), 100)
-    torque_grid = np.linspace(torque_vals.min(), torque_vals.max(), 100)
-    Rpm_grid, Torque_grid = np.meshgrid(rpm_grid, torque_grid)
-    points = np.vstack((rpm_vals, torque_vals)).T
-    Eff_grid = griddata(points, eff_vals, (Rpm_grid, Torque_grid), method='cubic')
-    
-    # 查詢每個工作點的插值效率
-    eff_at_points = eff_interpolator(df_operating['motor_rpm'].values, df_operating['motor_torque_Nm'].values)
-    
-    fig6 = go.Figure()
-    # 效率地圖等高線（使用一個 colorbar）
-    fig6.add_trace(go.Contour(
-        x=rpm_grid, y=torque_grid, z=Eff_grid,
-        colorscale='Viridis', opacity=0.8,
-        contours=dict(coloring='heatmap'),
-        colorbar=dict(title="效率 (%)", x=1.02, len=0.8),  # 放在右側，縮短長度避免與第二個色條干擾
-        name="效率地圖"
-    ))
-    # 工作點散點，使用另一個 colorbar（拉開距離）
-    fig6.add_trace(go.Scatter(
-        x=df_operating['motor_rpm'], y=df_operating['motor_torque_Nm'],
-        mode='markers', marker=dict(size=5, color=eff_at_points, colorscale='Viridis',
-                                    colorbar=dict(title="工作點效率 (%)", x=1.15, len=0.8), showscale=True),
-        name='工作點', text=[f"rpm: {r:.0f}<br>Torque: {t:.1f}<br>Eff: {e:.1f}%" 
-                             for r, t, e in zip(df_operating['motor_rpm'], df_operating['motor_torque_Nm'], eff_at_points)],
-        hoverinfo='text'
-    ))
-    fig6.update_xaxes(title_text="馬達轉速 (rpm)")
-    fig6.update_yaxes(title_text="馬達扭矩 (Nm)")
-    fig6.update_layout(height=500, margin=dict(l=20, r=120, t=40, b=20),  # 右側留更多空間給兩個色條
-                      legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5))
-    st.plotly_chart(fig6, use_container_width=True)
-    st.markdown("---")
+if "df_wltc_clean" in st.session_state and SCIPY_AVAILABLE and eff_interpolator is not None and 'df_eff_converted' in st.session_state:
+    df_eff_final = st.session_state.df_eff_converted
+    df_operating = st.session_state.df_motor_operating_points if "df_motor_operating_points" in st.session_state else None
+    if df_operating is not None:
+        st.markdown("## 📈 圖6：馬達效率地圖與工作點分佈")
+        st.caption("等高線為效率地圖（%），散點為行駛工況下的馬達操作點，顏色代表該點的效率值。")
+        
+        rpm_vals = df_eff_final['rpm'].values
+        torque_vals = df_eff_final['torque'].values
+        eff_vals = df_eff_final['efficiency'].values
+        
+        # 建立均勻網格用於等高線
+        rpm_grid = np.linspace(rpm_vals.min(), rpm_vals.max(), 100)
+        torque_grid = np.linspace(torque_vals.min(), torque_vals.max(), 100)
+        Rpm_grid, Torque_grid = np.meshgrid(rpm_grid, torque_grid)
+        points = np.vstack((rpm_vals, torque_vals)).T
+        Eff_grid = griddata(points, eff_vals, (Rpm_grid, Torque_grid), method='cubic')
+        
+        # 查詢每個工作點的插值效率
+        eff_at_points = eff_interpolator(df_operating['motor_rpm'].values, df_operating['motor_torque_Nm'].values)
+        
+        fig6 = go.Figure()
+        # 效率地圖等高線（colorbar 放在右側，稍微靠左）
+        fig6.add_trace(go.Contour(
+            x=rpm_grid, y=torque_grid, z=Eff_grid,
+            colorscale='Viridis', opacity=0.8,
+            contours=dict(coloring='heatmap'),
+            colorbar=dict(title="效率 (%)", x=1.02, len=0.8),
+            name="效率地圖"
+        ))
+        # 工作點散點，使用另一個 colorbar（放在更右側）
+        fig6.add_trace(go.Scatter(
+            x=df_operating['motor_rpm'], y=df_operating['motor_torque_Nm'],
+            mode='markers', marker=dict(size=5, color=eff_at_points, colorscale='Viridis',
+                                        colorbar=dict(title="工作點效率 (%)", x=1.15, len=0.8), showscale=True),
+            name='工作點', text=[f"rpm: {r:.0f}<br>Torque: {t:.1f}<br>Eff: {e:.1f}%" 
+                                 for r, t, e in zip(df_operating['motor_rpm'], df_operating['motor_torque_Nm'], eff_at_points)],
+            hoverinfo='text'
+        ))
+        fig6.update_xaxes(title_text="馬達轉速 (rpm)")
+        fig6.update_yaxes(title_text="馬達扭矩 (Nm)")
+        fig6.update_layout(height=500, margin=dict(l=20, r=140, t=40, b=20),
+                          legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5))
+        st.plotly_chart(fig6, use_container_width=True)
+        st.markdown("---")
 
 st.caption("💡 提示：圖中紫色虛線為目標 0→50 km/h 加速時間，棕色虛線為目標 0→最高車速加速時間。")
