@@ -21,25 +21,18 @@ st.markdown("""
 <details>
 <summary>📜 版本歷史記錄</summary>
 
+**v2.5 (2026-04-25) - 效率地圖改善版**
+- 修正圖6提示文字位置（移至圖3下方）。
+- 圖6中工作點若超出馬達TN曲線（扭矩超過該轉速下最大扭矩），改以紅色標示，並在 hover 提示中警告。
+- 其他細節優化。
+
 **v2.4 (2026-04-25) - 效率地圖寬格式支援版**
-- 修正「寬格式」效率地圖讀取錯誤：支援「RPM + 扭矩百分比（10%~100%）」的 CSV 格式。
-- 新增**馬達峰值扭矩輸入框**，用於將扭矩百分比換算為實際扭矩值。
-- 自動偵測並轉換為長格式 (rpm, torque, efficiency)，確保等高線與工作點正確顯示。
-- 圖6獨立顯示效率地圖，兩個色條已分開且不重疊。
+- 支援「RPM + 扭矩百分比（10%~100%）」CSV 格式，自動轉換為長格式。
+- 新增馬達峰值扭矩輸入，用於換算實際扭矩。
 
 **v2.3 (2026-04-25) - 效率地圖整合版**
-- 新增讀取馬達效率地圖功能。
-- 能耗計算改用查表效率。
+- 新增讀取馬達效率地圖功能，能耗計算改用查表效率。
 
-**v2.2 (2026-04-12) - 終極穩定與能耗校準版**
-- 修正 `np.gradient` 導致舊版 SciPy 當機的問題。
-- 正式納入齒輪與馬達效率損耗。
-
-**v2.1 (2026-04-11)**
-- 新增「讀取馬達TN曲線」模式。
-
-**v2.0 (2026-04-06)**
-- 整合 WLTC 分析、反向動力學計算。
 </details>
 """, unsafe_allow_html=True)
 
@@ -234,7 +227,6 @@ def compute_motor_operating_points_from_wltc(df_wltc, mass, area, cd, fr, wheel_
     times = df_wltc['time'].values
     speeds_kmh = df_wltc['speed_kmh'].values
     
-    # 【安全防護】確保一定有加速度，若無則依時間正確求導
     if 'accel_ms2' in df_wltc.columns:
         accels = df_wltc['accel_ms2'].values
     else:
@@ -275,11 +267,8 @@ def compute_motor_operating_points_from_wltc(df_wltc, mass, area, cd, fr, wheel_
     })
     return result_df
 
-# ================== 理論能耗計算函數（支援效率地圖）==================
+# ================== 理論能耗計算函數 ==================
 def build_efficiency_interpolator(df_eff):
-    """從效率地圖 CSV 建立插值函數 (轉速, 扭矩) -> 效率 (%)
-       輸入 df_eff 必須包含三欄: rpm, torque, efficiency
-    """
     if df_eff is None:
         return None
     rpm = df_eff['rpm'].values
@@ -303,64 +292,29 @@ def build_efficiency_interpolator(df_eff):
     return interp_func
 
 def compute_theoretical_energy_consumption(df_cycle, mass, area, cd, fr, gear_eff_percent, motor_eff_percent, eff_interpolator=None, df_operating_points=None):
-    """
-    根據行駛工況計算理論能耗 (Wh/km)
-    若提供 eff_interpolator，則使用效率地圖查表；否則使用固定 motor_eff_percent
-    若提供 df_operating_points，則直接使用其中的馬達轉速與扭矩，避免重複計算
-    """
     times = df_cycle['time'].values
     speeds_kmh = df_cycle['speed_kmh'].values
     accels = df_cycle['accel_ms2'].values
-    
     speeds_ms = speeds_kmh / 3.6
     
-    # 若已提供工作點數據，則直接使用；否則按照公式計算
-    if df_operating_points is not None:
-        motor_rpm = df_operating_points['motor_rpm'].values
-        motor_torque = df_operating_points['motor_torque_Nm'].values
-    else:
-        # 簡化計算：不依賴工作點，直接從阻力推算
-        F_roll_const = mass * G * fr
-        factor_aero = 0.5 * RHO * cd * area
-        wheel_radius_m = df_cycle.attrs.get('wheel_radius_m', 0.2294)  # 預設值，實際應從 session_state 傳入
-        # 這裡為避免複雜，假設已有 wheel_radius_m 和 gear_ratio，但未提供。由於原函數會由呼叫端提供 df_operating_points，此分支極少使用。
-        # 為確保程式安全，若無操作點，則用固定效率計算。
-        motor_rpm = np.zeros(len(times))
-        motor_torque = np.zeros(len(times))
-        for i, v_ms in enumerate(speeds_ms):
-            F_roll = mass * G * fr
-            F_air = factor_aero * v_ms**2
-            F_accel = mass * accels[i]
-            F_trac = F_roll + F_air + F_accel
-            # 假設輪胎半徑 0.2294 m, 減速比 8.7 (需從外部傳入，此處僅作示意)
-            # 為避免錯誤，直接設置效率固定使用 motor_eff_percent
-            pass
-        
-    # 物理功率 (輪上)
     F_roll = mass * G * fr
     F_aero = 0.5 * RHO * cd * area * speeds_ms**2
     F_acc = mass * accels
     F_trac = F_roll + F_aero + F_acc
     P_wheel = F_trac * speeds_ms
     
-    # 若有效率地圖，則逐點查詢效率
     if eff_interpolator is not None and df_operating_points is not None:
         motor_rpm = df_operating_points['motor_rpm'].values
         motor_torque = df_operating_points['motor_torque_Nm'].values
-        eff_values = eff_interpolator(motor_rpm, motor_torque)  # 效率 (%)
-        # 避免除以零或負效率
+        eff_values = eff_interpolator(motor_rpm, motor_torque)
         eff_values = np.clip(eff_values, 1, 100) / 100.0
-        # 驅動時，電池功率 = 輪上功率 / (齒輪效率 * 馬達效率)
-        # 回收時，電池功率 = 輪上功率 * (齒輪效率 * 馬達效率)
         eta_gear = gear_eff_percent / 100.0
         eta_total = eta_gear * eff_values
     else:
-        # 固定效率
         eta_gear = gear_eff_percent / 100.0
         eta_motor_fixed = motor_eff_percent / 100.0
         eta_total = eta_gear * eta_motor_fixed
     
-    # 計算電池端功率
     P_batt = np.zeros_like(P_wheel)
     drive_mask = P_wheel >= 0
     regen_mask = P_wheel < 0
@@ -379,7 +333,6 @@ def compute_theoretical_energy_consumption(df_cycle, mass, area, cd, fr, gear_ef
             cum_trapz_func = integrate.cumulative_trapezoid
         except AttributeError:
             cum_trapz_func = integrate.cumtrapz
-            
         energy_wh_cumulative = cum_trapz_func(P_batt, times, initial=0) / 3600.0
         total_energy_wh = energy_wh_cumulative[-1]
         drive_energy_wh = integrate.trapezoid(P_drive_batt, times) / 3600.0
@@ -474,8 +427,8 @@ with st.sidebar:
 
     st.subheader("🌬️ 阻力與環境參數設定")
     area = st.number_input("迎風面積 A (m²)", min_value=0.1, value=0.61, step=0.01, format="%.2f")
-    cd = st.number_input("風阻係數 Cd", min_value=0.1, max_value=2.0, value=0.50, step=0.01, format="%.2f", help="一般機車約 0.5~0.6，對應論文請輸入 0.6 或 0.7")
-    fr = st.number_input("滾動阻力係數 fr", min_value=0.001, max_value=0.05, value=0.015, step=0.001, format="%.3f", help="一般市售胎約 0.015。若要對應論文可輸入 0.007")
+    cd = st.number_input("風阻係數 Cd", min_value=0.1, max_value=2.0, value=0.50, step=0.01, format="%.2f")
+    fr = st.number_input("滾動阻力係數 fr", min_value=0.001, max_value=0.05, value=0.015, step=0.001, format="%.3f")
 
     st.session_state.cd = cd
     st.session_state.fr = fr
@@ -483,10 +436,7 @@ with st.sidebar:
     st.subheader("輪胎規格")
     tire_width = st.number_input("胎寬 (mm)", min_value=50, value=110, step=5)
     tire_aspect = st.number_input("扁平比 (%)", min_value=30, value=70, step=5)
-    rim_dia_inch = st.number_input("輪胎半徑(英吋)", min_value=8, value=12, step=1,
-                                   help="此處輸入的是輪輞直徑（英寸），用於計算輪胎半徑。")
-    st.caption("註：此處輸入的是輪輞直徑（英寸），即輪胎內側直徑，非輪胎外徑半徑。")
-
+    rim_dia_inch = st.number_input("輪胎半徑(英吋)", min_value=8, value=12, step=1)
     sidewall_height_mm = tire_width * tire_aspect / 100
     rim_radius_mm = (rim_dia_inch * 25.4) / 2
     tire_radius_m = (rim_radius_mm + sidewall_height_mm) / 1000
@@ -497,7 +447,6 @@ with st.sidebar:
     st.header("⚡ 動態性能表現規格")
     accel_time_full = st.number_input("0→最高車速加速時間 (秒)", min_value=1.0, value=10.0, step=0.5)
     avg_accel_full = speed_ms / accel_time_full
-
     accel_time_0to50 = st.number_input("0→50 km/h 加速時間 (秒)", min_value=1.0, value=5.0, step=0.5)
     speed_50_ms = 50 / 3.6
     avg_accel_50 = speed_50_ms / accel_time_0to50
@@ -526,8 +475,7 @@ with st.sidebar:
         else:
             voltage = int(voltage_option.replace('V', ''))
 
-        est_mode = st.radio("估算模式", ['手動輸入', '自動估算', '讀取馬達TN曲線'], index=0,
-                            help="手動輸入：設定最大功率、扭矩與轉速。自動估算：根據目標車速計算所需功率。讀取馬達TN曲線：上傳自訂的轉速與扭力對應 CSV 檔。")
+        est_mode = st.radio("估算模式", ['手動輸入', '自動估算', '讀取馬達TN曲線'], index=0)
 
         if est_mode == '自動估算':
             required_power, _ = calculate_power_requirements(total_mass, speed_ms, area, cd, fr)
@@ -544,22 +492,19 @@ with st.sidebar:
             base_speed_calc = (manual_max_power * 1000 * 60) / (2 * math.pi * manual_peak_torque)
             st.caption(f"對應基速 ≈ {base_speed_calc:.0f} rpm")
             custom_tn_df = None
-        else: # 讀取馬達TN曲線
+        else:
             st.markdown("請上傳包含轉速(rpm)與扭矩(Nm)的 CSV 檔案")
             tn_file = st.file_uploader("上傳 TN 曲線 (CSV)", type=["csv"], key="tn_upload")
             custom_tn_df = None
             manual_max_power = 4.4 
             manual_peak_torque = 18.0
             manual_max_rpm = 9000
-            
             if tn_file is not None:
                 try:
                     df_tn = pd.read_csv(tn_file)
                     st.success("成功讀取多重 TN 曲線檔案")
-                    
                     rpm_col = st.selectbox("👉 選擇轉速 (X軸) 欄位", df_tn.columns, index=0)
                     available_torque_curves = [col for col in df_tn.columns if col != rpm_col]
-                    
                     if not available_torque_curves:
                         st.error("檔案中除了轉速外，找不到其他的扭力數據欄位！")
                     else:
@@ -577,55 +522,44 @@ with st.sidebar:
                 except Exception as e:
                     st.error(f"解析檔案失敗: {e}")
 
-        motor_eff = st.number_input("馬達效率 (%)", min_value=0.0, max_value=100.0, value=90.0, step=1.0,
-                                    help="固定工作點下的馬達效率，用於里程估計，也會顯示在馬達規格中。")
+        motor_eff = st.number_input("馬達效率 (%)", min_value=0.0, max_value=100.0, value=90.0, step=1.0)
         
-        # ---------- 效率地圖上傳（支援寬格式）----------
+        # 效率地圖上傳（支援寬格式）
         st.markdown("#### 📊 馬達效率地圖 (選用)")
         eff_file = st.file_uploader("上傳效率地圖 CSV", type=["csv"], key="eff_map")
         eff_interpolator = None
-        df_eff_converted = None  # 標準化後的長格式 DataFrame
+        df_eff_converted = None
 
         if eff_file is not None and SCIPY_AVAILABLE:
             try:
                 df_eff_raw = pd.read_csv(eff_file)
                 st.info(f"原始檔案欄位：{list(df_eff_raw.columns)}")
-                
-                # 偵測是否為寬格式 (第一欄像是轉速，其餘欄位名稱含 '%' 或 '效率')
                 first_col = df_eff_raw.columns[0]
                 other_cols = df_eff_raw.columns[1:]
                 is_wide_format = False
-                # 檢查第一欄名稱是否暗示轉速
                 if any(key in first_col.lower() for key in ['rpm', '轉速', 'speed']):
-                    # 檢查其他欄位是否包含百分比或效率字樣
                     if any(('%' in col) or ('效率' in col) for col in other_cols):
                         is_wide_format = True
                 
                 if is_wide_format:
                     st.warning("偵測到「寬格式」效率地圖 (轉速 + 扭矩百分比欄位)。請輸入馬達峰值扭矩以換算實際扭矩值。")
-                    # 獲取峰值扭矩：優先從手動輸入取得，若為自動估算則暫時需要用戶提供
                     if est_mode == '手動輸入' and 'manual_peak_torque' in locals() and manual_peak_torque is not None:
                         default_peak_torque = manual_peak_torque
                     else:
-                        default_peak_torque = 18.0  # 預設值
+                        default_peak_torque = 18.0
                     peak_torque_input = st.number_input("馬達峰值扭矩 (Nm) - 用於效率地圖換算", 
                                                         min_value=0.1, value=default_peak_torque, step=0.5, key="eff_map_peak_torque")
-                    
-                    # 解析轉速欄位
                     rpm_col = first_col
                     df_eff_raw[rpm_col] = pd.to_numeric(df_eff_raw[rpm_col], errors='coerce')
                     df_eff_raw = df_eff_raw.dropna(subset=[rpm_col])
-                    
                     records = []
                     for col in other_cols:
-                        # 從欄位名稱提取百分比數值 (例如 "10%效率" -> 10, "20% efficiency" -> 20)
                         match = re.search(r'(\d+(?:\.\d+)?)', col)
                         if match:
                             percent = float(match.group(1))
                         else:
                             continue
                         torque_actual = peak_torque_input * (percent / 100.0)
-                        # 取得該欄效率值，清理可能的 HTML entity
                         eff_series = df_eff_raw[col].astype(str).str.replace(r'&nbsp;', '', regex=True)
                         eff_series = pd.to_numeric(eff_series, errors='coerce')
                         for idx, row in df_eff_raw.iterrows():
@@ -636,7 +570,6 @@ with st.sidebar:
                     df_eff_converted = pd.DataFrame(records)
                     st.success(f"已將寬格式轉換為長格式，共 {len(df_eff_converted)} 筆資料 (扭矩範圍 {df_eff_converted['torque'].min():.1f} ~ {df_eff_converted['torque'].max():.1f} Nm)")
                 else:
-                    # 原本的三欄模式
                     rpm_candidates = [c for c in df_eff_raw.columns if 'rpm' in c.lower() or '轉速' in c]
                     torque_candidates = [c for c in df_eff_raw.columns if 'torque' in c.lower() or '扭矩' in c or '扭力' in c]
                     eff_candidates = [c for c in df_eff_raw.columns if 'eff' in c.lower() or '效率' in c]
@@ -645,14 +578,12 @@ with st.sidebar:
                         torque_col = torque_candidates[0]
                         eff_col = eff_candidates[0]
                     else:
-                        # 預設前三欄
                         rpm_col, torque_col, eff_col = df_eff_raw.columns[0], df_eff_raw.columns[1], df_eff_raw.columns[2]
                     df_eff_converted = df_eff_raw[[rpm_col, torque_col, eff_col]].copy()
                     df_eff_converted.columns = ['rpm', 'torque', 'efficiency']
                     df_eff_converted = df_eff_converted.dropna()
                     st.success(f"成功讀取標準格式效率地圖，共 {len(df_eff_converted)} 筆資料")
                 
-                # 建立插值器
                 if df_eff_converted is not None and len(df_eff_converted) > 0:
                     eff_interpolator = build_efficiency_interpolator(df_eff_converted)
                     st.session_state.df_eff_converted = df_eff_converted
@@ -669,16 +600,13 @@ with st.sidebar:
             gear_ratio = st.number_input("請輸入減速比", min_value=1.0, value=8.7, step=0.5)
         else:
             gear_ratio = None
-        gear_eff = st.number_input("齒輪箱效率 (%)", min_value=0.0, max_value=100.0, value=95.0, step=1.0,
-                                   help="齒輪箱傳動效率，用於里程估計。")
+        gear_eff = st.number_input("齒輪箱效率 (%)", min_value=0.0, max_value=100.0, value=95.0, step=1.0)
 
     with st.expander("🔹 電池 (Battery)", expanded=True):
-        user_battery_energy_kwh = st.number_input("電池總能量 (kWh)", min_value=0.5, value=5.0, step=0.5,
-                                                  help="用於行駛里程估計的電池總能量，請根據實際電池規格輸入。")
-        battery_soc = st.number_input("電池可用 SOC (%)", min_value=0.0, max_value=100.0, value=90.0, step=5.0,
-                                      help="State of Charge，剩餘電量百分比，通常為避免深度放電而保留部分電量。")
+        user_battery_energy_kwh = st.number_input("電池總能量 (kWh)", min_value=0.5, value=5.0, step=0.5)
+        battery_soc = st.number_input("電池可用 SOC (%)", min_value=0.0, max_value=100.0, value=90.0, step=5.0)
 
-    # ---------- 行駛工況設定 ----------
+    # 行駛工況設定
     st.header("📁 行駛工況設定")
     st.markdown("上傳 **行駛工況 CSV**（需含時間(s)、車速(km/h)；若無加速度欄位，系統將自動計算）")
     wltc_file = st.file_uploader("選擇行駛工況 CSV 檔案", type=["csv"], key="wltc")
@@ -686,17 +614,13 @@ with st.sidebar:
         try:
             df_wltc = pd.read_csv(wltc_file)
             st.success(f"成功讀取行駛工況，共 {len(df_wltc)} 筆資料")
-            
             time_candidates = [c for c in df_wltc.columns if 'time' in c.lower() or 't' in c.lower()]
             speed_candidates = [c for c in df_wltc.columns if 'speed' in c.lower() or 'velocity' in c.lower() or 'v' in c.lower()]
-            
             time_col = st.selectbox("時間欄位 (秒)", df_wltc.columns, index=df_wltc.columns.get_loc(time_candidates[0]) if time_candidates else 0)
             speed_col = st.selectbox("車速欄位 (km/h)", df_wltc.columns, index=df_wltc.columns.get_loc(speed_candidates[0]) if speed_candidates else 1 if len(df_wltc.columns) > 1 else 0)
-            
             df_wltc_clean = df_wltc[[time_col, speed_col]].copy()
             df_wltc_clean.columns = ['time', 'speed_kmh']
             df_wltc_clean = df_wltc_clean.dropna()
-
             accel_col = next((col for col in df_wltc.columns if 'accel' in col.lower() or 'a' in col.lower()), None)
             if accel_col is not None:
                 df_wltc_clean['accel_ms2'] = df_wltc[accel_col]
@@ -704,18 +628,12 @@ with st.sidebar:
                 speeds_ms = df_wltc_clean['speed_kmh'].values / 3.6
                 times = df_wltc_clean['time'].values
                 df_wltc_clean['accel_ms2'] = np.gradient(speeds_ms, times)
-            
-            st.session_state.df_wltc_raw = df_wltc
-            st.session_state.wltc_time_col = time_col
-            st.session_state.wltc_speed_col = speed_col
             st.session_state.df_wltc_clean = df_wltc_clean
-            
             if 'gear_ratio' in locals() and gear_ratio is not None:
                 gear_ratio_val = gear_ratio
             else:
                 gear_ratio_val = estimate_gearbox(speed_ms, wheel_radius_m)
             gear_eff_val = gear_eff / 100.0
-            
             df_op = compute_motor_operating_points_from_wltc(
                 df_wltc_clean, total_mass, area, cd, fr, wheel_radius_m, gear_ratio_val, gear_eff_val
             )
@@ -786,11 +704,9 @@ else:
     const_idx = n <= base_speed
     T_motor_max[const_idx] = T_peak
     P_motor_out[const_idx] = T_peak * n[const_idx] / 9550
-
     power_idx = (n > base_speed) & (n <= n_max_motor)
     T_motor_max[power_idx] = (max_power_kw_used * 1000) / (2 * math.pi * n[power_idx] / 60)
     P_motor_out[power_idx] = max_power_kw_used
-
     over_idx = n > n_max_motor
     T_motor_max[over_idx] = 0
     P_motor_out[over_idx] = 0
@@ -867,7 +783,6 @@ if "df_motor_operating_points" in st.session_state:
     min_op = st.session_state.df_motor_operating_points['motor_torque_Nm'].min()
     if not np.isnan(min_op): y_min_raw = min(y_min_raw, min_op)
 y_min_torque = math.floor(y_min_raw / grid_step) * grid_step
-
 y_max_torque = T_peak + grid_step
 if "df_motor_operating_points" in st.session_state:
     max_op = st.session_state.df_motor_operating_points['motor_torque_Nm'].max()
@@ -930,7 +845,6 @@ if "df_motor_operating_points" in st.session_state:
     min_op_w = st.session_state.df_motor_operating_points['wheel_torque_Nm'].min()
     if not np.isnan(min_op_w): y_min_raw_w = min(y_min_raw_w, min_op_w)
 y_min_wheel = math.floor(y_min_raw_w / grid_step_wheel) * grid_step_wheel
-
 y_max_wheel = T_wheel_peak + grid_step_wheel
 if "df_motor_operating_points" in st.session_state:
     max_op_w = st.session_state.df_motor_operating_points['wheel_torque_Nm'].max()
@@ -992,6 +906,9 @@ fig3.update_xaxes(title_text="時間 (秒)")
 fig3.update_yaxes(title_text="車速 (km/h)", secondary_y=False)
 fig3.update_yaxes(title_text="位移 (m)", secondary_y=True)
 st.plotly_chart(fig3, use_container_width=True)
+# 將原本位於圖6的提示移到圖3下方
+st.caption("💡 提示：圖中紫色虛線為目標 0→50 km/h 加速時間，棕色虛線為目標 0→最高車速加速時間。")
+st.markdown("---")
 
 # ================== 圖4 區塊 ==================
 if "df_wltc_clean" in st.session_state:
@@ -1089,13 +1006,12 @@ if "df_wltc_clean" in st.session_state and SCIPY_AVAILABLE and eff_interpolator 
     df_operating = st.session_state.df_motor_operating_points if "df_motor_operating_points" in st.session_state else None
     if df_operating is not None:
         st.markdown("## 📈 圖6：馬達效率地圖與工作點分佈")
-        st.caption("等高線為效率地圖（%），散點為行駛工況下的馬達操作點，顏色代表該點的效率值。")
+        st.caption("等高線為效率地圖（%），散點為行駛工況下的馬達操作點，顏色代表該點的效率值。紅色點表示該工作點所需扭矩超過馬達極限（無法滿足）。")
         
         rpm_vals = df_eff_final['rpm'].values
         torque_vals = df_eff_final['torque'].values
         eff_vals = df_eff_final['efficiency'].values
         
-        # 建立均勻網格用於等高線
         rpm_grid = np.linspace(rpm_vals.min(), rpm_vals.max(), 100)
         torque_grid = np.linspace(torque_vals.min(), torque_vals.max(), 100)
         Rpm_grid, Torque_grid = np.meshgrid(rpm_grid, torque_grid)
@@ -1103,10 +1019,20 @@ if "df_wltc_clean" in st.session_state and SCIPY_AVAILABLE and eff_interpolator 
         Eff_grid = griddata(points, eff_vals, (Rpm_grid, Torque_grid), method='cubic')
         
         # 查詢每個工作點的插值效率
-        eff_at_points = eff_interpolator(df_operating['motor_rpm'].values, df_operating['motor_torque_Nm'].values)
+        work_rpm = df_operating['motor_rpm'].values
+        work_torque = df_operating['motor_torque_Nm'].values
+        eff_at_points = eff_interpolator(work_rpm, work_torque)
         
+        # 判斷哪些工作點超出馬達極限
+        # 利用已有的 T_motor_max 曲線 (n, T_motor_max)，注意 T_motor_max 是在 n 上定義的，且可能有超過 n_max_motor 的部分
+        # 將工作點轉速限制在 T_motor_max 的轉速範圍內
+        max_torque_interp = np.interp(work_rpm, n, T_motor_max, left=0, right=0)
+        # 容差值，避免浮點誤差
+        exceed_mask = work_torque > (max_torque_interp + 1e-3)
+        
+        # 建立兩個散點 trace: 正常點（依效率著色），超出點（紅色固定）
         fig6 = go.Figure()
-        # 效率地圖等高線（colorbar 放在右側，稍微靠左）
+        # 效率地圖等高線
         fig6.add_trace(go.Contour(
             x=rpm_grid, y=torque_grid, z=Eff_grid,
             colorscale='Viridis', opacity=0.8,
@@ -1114,15 +1040,29 @@ if "df_wltc_clean" in st.session_state and SCIPY_AVAILABLE and eff_interpolator 
             colorbar=dict(title="效率 (%)", x=1.02, len=0.8),
             name="效率地圖"
         ))
-        # 工作點散點，使用另一個 colorbar（放在更右側）
-        fig6.add_trace(go.Scatter(
-            x=df_operating['motor_rpm'], y=df_operating['motor_torque_Nm'],
-            mode='markers', marker=dict(size=5, color=eff_at_points, colorscale='Viridis',
-                                        colorbar=dict(title="工作點效率 (%)", x=1.15, len=0.8), showscale=True),
-            name='工作點', text=[f"rpm: {r:.0f}<br>Torque: {t:.1f}<br>Eff: {e:.1f}%" 
-                                 for r, t, e in zip(df_operating['motor_rpm'], df_operating['motor_torque_Nm'], eff_at_points)],
-            hoverinfo='text'
-        ))
+        
+        # 正常點（不超限）
+        normal_mask = ~exceed_mask
+        if np.any(normal_mask):
+            fig6.add_trace(go.Scatter(
+                x=work_rpm[normal_mask], y=work_torque[normal_mask],
+                mode='markers', marker=dict(size=5, color=eff_at_points[normal_mask], colorscale='Viridis',
+                                            colorbar=dict(title="工作點效率 (%)", x=1.15, len=0.8), showscale=True),
+                name='工作點 (可滿足)', text=[f"rpm: {r:.0f}<br>Torque: {t:.1f}<br>Eff: {e:.1f}%" 
+                                             for r, t, e in zip(work_rpm[normal_mask], work_torque[normal_mask], eff_at_points[normal_mask])],
+                hoverinfo='text'
+            ))
+        
+        # 超出點（紅色）
+        if np.any(exceed_mask):
+            fig6.add_trace(go.Scatter(
+                x=work_rpm[exceed_mask], y=work_torque[exceed_mask],
+                mode='markers', marker=dict(size=6, color='red', symbol='x'),
+                name='工作點 (超出馬達極限)', text=[f"rpm: {r:.0f}<br>Torque: {t:.1f}<br>⚠️ 超出馬達極限 (最大 {max_t:.1f} Nm)" 
+                                                   for r, t, max_t in zip(work_rpm[exceed_mask], work_torque[exceed_mask], max_torque_interp[exceed_mask])],
+                hoverinfo='text'
+            ))
+        
         fig6.update_xaxes(title_text="馬達轉速 (rpm)")
         fig6.update_yaxes(title_text="馬達扭矩 (Nm)")
         fig6.update_layout(height=500, margin=dict(l=20, r=140, t=40, b=20),
@@ -1130,4 +1070,4 @@ if "df_wltc_clean" in st.session_state and SCIPY_AVAILABLE and eff_interpolator 
         st.plotly_chart(fig6, use_container_width=True)
         st.markdown("---")
 
-st.caption("💡 提示：圖中紫色虛線為目標 0→50 km/h 加速時間，棕色虛線為目標 0→最高車速加速時間。")
+# 原先全域末端的 caption 已刪除，提示已移至圖3下方
