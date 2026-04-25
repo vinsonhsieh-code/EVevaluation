@@ -21,10 +21,29 @@ st.markdown("""
 <details>
 <summary>📜 版本歷史記錄</summary>
 
-**v2.5 (2026-04-25) - 效率地圖靜默讀取版**
-- 讀取效率地圖時不再顯示冗長的偵測訊息，僅保留簡潔成功提示。
-- 圖6獨立顯示效率地圖，紅色點標示超出馬達極限的工作點。
+**v3.0 (2026-04-25) - 正式穩定版**
+- 效率地圖讀取流程靜默化：不再顯示原始欄位、格式判斷等冗餘訊息，僅保留簡潔成功提示。
+- 圖6中超出馬達TN曲線的工作點以紅色 X 標示，並在 hover 提示中顯示極限值。
+- 圖5下方新增「本次工況實際計算範例」，動態帶入用戶參數與逐秒積分結果。
+- 修正圖3提示文字位置（移至圖3下方）。
+- 所有圖表與能耗計算功能穩定整合。
 
+**v2.4 (2026-04-25) - 效率地圖寬格式支援版**
+- 支援「RPM + 扭矩百分比（10%~100%）」CSV 格式，自動轉換為長格式。
+- 新增馬達峰值扭矩輸入，用於換算實際扭矩。
+
+**v2.3 (2026-04-25) - 效率地圖整合版**
+- 新增讀取馬達效率地圖功能，能耗計算改用查表效率。
+
+**v2.2 (2026-04-12) - 終極穩定與能耗校準版**
+- 修正 `np.gradient` 導致舊版 SciPy 當機的問題。
+- 正式納入齒輪與馬達效率損耗。
+
+**v2.1 (2026-04-11)**
+- 新增「讀取馬達TN曲線」模式。
+
+**v2.0 (2026-04-06)**
+- 整合 WLTC 分析、反向動力學計算。
 </details>
 """, unsafe_allow_html=True)
 
@@ -522,7 +541,6 @@ with st.sidebar:
                         is_wide_format = True
                 
                 if is_wide_format:
-                    # 靜默取得峰值扭矩（不輸出警告）
                     if est_mode == '手動輸入' and 'manual_peak_torque' in locals() and manual_peak_torque is not None:
                         default_peak_torque = manual_peak_torque
                     else:
@@ -886,7 +904,6 @@ fig3.update_xaxes(title_text="時間 (秒)")
 fig3.update_yaxes(title_text="車速 (km/h)", secondary_y=False)
 fig3.update_yaxes(title_text="位移 (m)", secondary_y=True)
 st.plotly_chart(fig3, use_container_width=True)
-# 將提示移到圖3下方
 st.caption("💡 提示：圖中紫色虛線為目標 0→50 km/h 加速時間，棕色虛線為目標 0→最高車速加速時間。")
 st.markdown("---")
 
