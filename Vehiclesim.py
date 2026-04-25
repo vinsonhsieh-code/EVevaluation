@@ -23,13 +23,14 @@ st.markdown("""
 **v2.3 (2026-04-25) - 效率地圖整合版**
 - 新增「讀取馬達效率地圖」功能：上傳 CSV（轉速、扭矩、效率），自動建立二維插值模型。
 - 能耗計算改用查表效率，取代固定馬達效率，大幅提升精確度。
-- 新增圖6：馬達效率地圖等高線 + 工況工作點（顏色標示效率值）。
-- 原有圖1–5完全保留。
+- **圖5全面升級**：上半部顯示效率地圖等高線 + 工況工作點，下半部顯示瞬時功率與累積能耗。
+- 圖5下方追加詳細理論計算公式說明。
+- 原有圖1–4完全保留。
 
 **v2.2 (2026-04-12) - 終極穩定與能耗校準版**
 - 修正 `np.gradient` 導致舊版 SciPy 當機的問題，全面改用相容性最高的 `np.trapz` 與防彈加速度函數。
 - 引入強制型別轉換 `pd.to_numeric`，防止上傳的 CSV 夾帶字串導致數學運算崩潰。
-- 新增圖5「理論能耗計算」：正式納入齒輪與馬達效率損耗。
+- 正式納入齒輪與馬達效率損耗。
 - 區分「輪上能耗」與「電池端理論能耗 (對應論文)」，並獨立拆解動能回收數據。
 - 里程估算與行駛工況積分模組深度整合，獨立顯示可用能量 (Wh) 與理論預估里程 (km)。
 
@@ -944,10 +945,10 @@ if "df_wltc_clean" in st.session_state:
     st.plotly_chart(fig4, use_container_width=True)
     st.markdown("---")
 
-# ================== 圖5：理論能耗分析 (支援效率地圖) ==================
+# ================== 圖5：理論能耗分析 + 效率地圖 (整合) ==================
 if "df_wltc_clean" in st.session_state and SCIPY_AVAILABLE:
-    st.markdown("## 📈 圖5：理論能耗分析與里程預估 (含效率地圖)")
-    st.caption("本模組基於行駛工況積分計算能耗，並根據側邊欄設定的**電池容量與 SOC** 進行續航里程預估。若上傳了效率地圖，將使用逐點查表效率，否則採用固定馬達效率。")
+    st.markdown("## 📈 圖5：理論能耗分析與里程預估（含效率地圖）")
+    st.caption("上半部：馬達效率地圖等高線（%）+ 行駛工況工作點；下半部：電池瞬時功率與累積耗電。")
     
     df_energy = st.session_state.df_wltc_clean.copy()
     df_operating = st.session_state.df_motor_operating_points if "df_motor_operating_points" in st.session_state else None
@@ -974,26 +975,9 @@ if "df_wltc_clean" in st.session_state and SCIPY_AVAILABLE:
     cc2.metric("🎯 理論預估里程", f"{estimated_range_km:.1f} km", delta=f"基於 {user_battery_energy_kwh:.1f}kWh 電池")
     cc3.metric("📈 驅動耗電 (電池端)", f"{drive_energy_wh:.1f} Wh")
     
-    # 繪製電池端瞬時功率與累積能量
-    fig5 = make_subplots(specs=[[{"secondary_y": True}]])
-    power_pos = np.maximum(power_batt_w, 0)
-    power_neg = np.minimum(power_batt_w, 0)
-    fig5.add_trace(go.Scatter(x=times, y=power_pos, mode='lines', fill='tozeroy', name='驅動輸出 (W)', line=dict(color='crimson', width=1)), secondary_y=False)
-    fig5.add_trace(go.Scatter(x=times, y=power_neg, mode='lines', fill='tozeroy', name='動能回收 (W)', line=dict(color='seagreen', width=1)), secondary_y=False)
-    fig5.add_trace(go.Scatter(x=times, y=energy_cum, mode='lines', name='累積淨耗電 (Wh)', line=dict(color='gold', width=3, dash='solid')), secondary_y=True)
-    fig5.update_xaxes(title_text="時間 (秒)", zeroline=True, zerolinecolor='gray')
-    fig5.update_yaxes(title_text="瞬時電池功率 (W)", secondary_y=False, zeroline=True, zerolinecolor='gray')
-    fig5.update_yaxes(title_text="累積耗電 (Wh)", secondary_y=True, zeroline=False)
-    fig5.update_layout(height=450, margin=dict(l=20, r=20, t=40, b=20), legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5))
-    st.plotly_chart(fig5, use_container_width=True)
-    st.markdown("---")
-
-    # ================== 新增圖6：馬達效率地圖可視化 ==================
+    # ========== 建立雙子圖：上半部效率地圖，下半部功率與能量 ==========
     if eff_interpolator is not None and df_eff is not None and df_operating is not None:
-        st.markdown("## 📈 圖6：馬達效率地圖與工作點分佈")
-        st.caption("等高線為效率地圖（%），散點為行駛工況下的馬達操作點，顏色代表該點的效率值。")
-        
-        # 建立效率地圖的網格
+        # 上半部：效率地圖等高線 + 工作點
         rpm_vals = df_eff['rpm'].values
         torque_vals = df_eff['torque'].values
         eff_vals = df_eff['efficiency'].values
@@ -1004,28 +988,108 @@ if "df_wltc_clean" in st.session_state and SCIPY_AVAILABLE:
         points = np.vstack((rpm_vals, torque_vals)).T
         Eff_grid = griddata(points, eff_vals, (Rpm_grid, Torque_grid), method='cubic')
         
-        fig6 = go.Figure()
-        fig6.add_trace(go.Contour(
+        # 查詢每個工作點的插值效率
+        eff_at_points = eff_interpolator(df_operating['motor_rpm'].values, df_operating['motor_torque_Nm'].values)
+        
+        # 建立子圖：2 行 1 列
+        fig5 = make_subplots(rows=2, cols=1, shared_xaxes=False, 
+                              vertical_spacing=0.12,
+                              subplot_titles=("馬達效率地圖與工作點", "電池瞬時功率與累積耗電"))
+        
+        # 效率地圖等高線
+        fig5.add_trace(go.Contour(
             x=rpm_grid, y=torque_grid, z=Eff_grid,
             colorscale='Viridis', opacity=0.8,
             contours=dict(coloring='heatmap'),
-            colorbar=dict(title="效率 (%)"),
+            colorbar=dict(title="效率 (%)", x=1.02),
             name="效率地圖"
-        ))
-        # 添加工作點，顏色標示效率
-        df_op_eff = df_operating.copy()
-        # 查詢每個工作點的插值效率
-        eff_at_points = eff_interpolator(df_op_eff['motor_rpm'].values, df_op_eff['motor_torque_Nm'].values)
-        fig6.add_trace(go.Scatter(
-            x=df_op_eff['motor_rpm'], y=df_op_eff['motor_torque_Nm'],
-            mode='markers', marker=dict(size=5, color=eff_at_points, colorscale='Viridis', colorbar=dict(title="操作點效率 (%)"), showscale=True),
-            name='工作點', text=[f"rpm: {r:.0f}<br>Torque: {t:.1f}<br>Eff: {e:.1f}%" for r, t, e in zip(df_op_eff['motor_rpm'], df_op_eff['motor_torque_Nm'], eff_at_points)],
+        ), row=1, col=1)
+        
+        # 工作點散點，顏色標示實際效率
+        fig5.add_trace(go.Scatter(
+            x=df_operating['motor_rpm'], y=df_operating['motor_torque_Nm'],
+            mode='markers', marker=dict(size=4, color=eff_at_points, colorscale='Viridis',
+                                        colorbar=dict(title="工作點效率 (%)", x=1.08), showscale=True),
+            name='工作點', text=[f"rpm: {r:.0f}<br>Torque: {t:.1f}<br>Eff: {e:.1f}%" 
+                                 for r, t, e in zip(df_operating['motor_rpm'], df_operating['motor_torque_Nm'], eff_at_points)],
             hoverinfo='text'
-        ))
-        fig6.update_xaxes(title_text="馬達轉速 (rpm)")
-        fig6.update_yaxes(title_text="馬達扭矩 (Nm)")
-        fig6.update_layout(height=500, margin=dict(l=20, r=20, t=40, b=20))
-        st.plotly_chart(fig6, use_container_width=True)
-        st.markdown("---")
+        ), row=1, col=1)
+        
+        fig5.update_xaxes(title_text="馬達轉速 (rpm)", row=1, col=1)
+        fig5.update_yaxes(title_text="馬達扭矩 (Nm)", row=1, col=1)
+        
+        # 下半部：功率曲線（沿用原有邏輯）
+        power_pos = np.maximum(power_batt_w, 0)
+        power_neg = np.minimum(power_batt_w, 0)
+        fig5.add_trace(go.Scatter(x=times, y=power_pos, mode='lines', fill='tozeroy', name='驅動輸出 (W)', line=dict(color='crimson', width=1)), row=2, col=1)
+        fig5.add_trace(go.Scatter(x=times, y=power_neg, mode='lines', fill='tozeroy', name='動能回收 (W)', line=dict(color='seagreen', width=1)), row=2, col=1)
+        fig5.add_trace(go.Scatter(x=times, y=energy_cum, mode='lines', name='累積淨耗電 (Wh)', line=dict(color='gold', width=3, dash='solid')), row=2, col=1)
+        
+        fig5.update_xaxes(title_text="時間 (秒)", row=2, col=1, zeroline=True, zerolinecolor='gray')
+        fig5.update_yaxes(title_text="瞬時電池功率 (W)", row=2, col=1, zeroline=True, zerolinecolor='gray')
+        fig5.update_yaxes(title_text="累積耗電 (Wh)", row=2, col=1, secondary_y=False)  # 功率與能量共用左軸
+        # 增加右軸顯示能量
+        fig5.update_yaxes(title_text="累積耗電 (Wh)", row=2, col=1, secondary_y=True, overlaying='y', side='right')
+        # 需要重新設定 trace 的 yaxis
+        for trace in fig5.data:
+            if trace.name == '累積淨耗電 (Wh)':
+                trace.yaxis = 'y2'
+        fig5.update_layout(height=800, margin=dict(l=20, r=80, t=80, b=20), 
+                          legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5))
+        st.plotly_chart(fig5, use_container_width=True)
+    
+    else:
+        # 若沒有效率地圖，則只顯示單一圖表（原圖5）
+        fig5_single = make_subplots(specs=[[{"secondary_y": True}]])
+        power_pos = np.maximum(power_batt_w, 0)
+        power_neg = np.minimum(power_batt_w, 0)
+        fig5_single.add_trace(go.Scatter(x=times, y=power_pos, mode='lines', fill='tozeroy', name='驅動輸出 (W)', line=dict(color='crimson', width=1)), secondary_y=False)
+        fig5_single.add_trace(go.Scatter(x=times, y=power_neg, mode='lines', fill='tozeroy', name='動能回收 (W)', line=dict(color='seagreen', width=1)), secondary_y=False)
+        fig5_single.add_trace(go.Scatter(x=times, y=energy_cum, mode='lines', name='累積淨耗電 (Wh)', line=dict(color='gold', width=3, dash='solid')), secondary_y=True)
+        fig5_single.update_xaxes(title_text="時間 (秒)", zeroline=True, zerolinecolor='gray')
+        fig5_single.update_yaxes(title_text="瞬時電池功率 (W)", secondary_y=False, zeroline=True, zerolinecolor='gray')
+        fig5_single.update_yaxes(title_text="累積耗電 (Wh)", secondary_y=True, zeroline=False)
+        fig5_single.update_layout(height=450, margin=dict(l=20, r=20, t=40, b=20), 
+                                  legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5))
+        st.plotly_chart(fig5_single, use_container_width=True)
+    
+    # ================== 圖5下方：公式說明區塊 ==================
+    with st.expander("📐 理論能耗計算公式說明", expanded=True):
+        st.markdown(r"""
+        **1. 行駛阻力 (N)**  
+        $$
+        F_{\text{total}} = F_{\text{roll}} + F_{\text{aero}} + F_{\text{acc}}
+        $$  
+        - 滾動阻力：$F_{\text{roll}} = m g f_r$  
+        - 空氣阻力：$F_{\text{aero}} = \frac{1}{2} \rho C_d A v^2$  
+        - 加速阻力：$F_{\text{acc}} = m a$  
+
+        **2. 輪上功率 (W)**  
+        $$
+        P_{\text{wheel}} = F_{\text{total}} \cdot v
+        $$
+
+        **3. 馬達效率查表 (效率地圖)**  
+        根據馬達轉速 $n$ 與扭力 $T$，利用二維線性插值取得即時效率 $\eta_{\text{motor}}(n, T)$。  
+        若未上傳效率地圖，則使用固定效率 $\eta_{\text{motor}}$。
+
+        **4. 總效率 (驅動/回收)**  
+        - 驅動模式：$\eta_{\text{total}} = \eta_{\text{gear}} \times \eta_{\text{motor}}$  
+        - 回收模式：$\eta_{\text{total}} = \eta_{\text{gear}} \times \eta_{\text{motor}}$（回收時功率反向，效率仍相乘）
+
+        **5. 電池端功率 (W)**  
+        - 驅動時：$P_{\text{batt}} = P_{\text{wheel}} / \eta_{\text{total}}$  
+        - 回收時：$P_{\text{batt}} = P_{\text{wheel}} \times \eta_{\text{total}}$（$P_{\text{wheel}}<0$ 表示減速回收）
+
+        **6. 累積能耗與里程估算**  
+        - 累積耗電 (Wh)：$E_{\text{batt}} = \frac{1}{3600} \int P_{\text{batt}} \, dt$  
+        - 行駛距離 (km)：$D = \frac{1}{1000} \int v \, dt$  
+        - 每公里能耗 (Wh/km)：$\text{EC} = \frac{E_{\text{batt}}}{D}$  
+        - 預估里程 (km)：$\text{Range} = \frac{E_{\text{usable}}}{\text{EC}}$，其中 $E_{\text{usable}} = E_{\text{battery}} \times \text{SOC} / 100$
+
+        **7. 離散積分方法**  
+        使用 SciPy 的 `integrate.trapezoid` 或 NumPy 的 `np.trapz` 進行梯形法數值積分，確保在非等間隔時間序列下仍精確。
+        """)
+    st.markdown("---")
 
 st.caption("💡 提示：圖中紫色虛線為目標 0→50 km/h 加速時間，棕色虛線為目標 0→最高車速加速時間。")
