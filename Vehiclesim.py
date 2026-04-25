@@ -21,10 +21,9 @@ st.markdown("""
 <details>
 <summary>📜 版本歷史記錄</summary>
 
-**v2.5 (2026-04-25) - 效率地圖改善版**
-- 修正圖6提示文字位置（移至圖3下方）。
-- 圖6中工作點若超出馬達TN曲線，改以紅色標示。
-- 圖5下方新增「本次工況實際計算範例」，帶入實際參數與逐點運算過程。
+**v2.5 (2026-04-25) - 效率地圖靜默讀取版**
+- 讀取效率地圖時不再顯示冗長的偵測訊息，僅保留簡潔成功提示。
+- 圖6獨立顯示效率地圖，紅色點標示超出馬達極限的工作點。
 
 </details>
 """, unsafe_allow_html=True)
@@ -506,7 +505,7 @@ with st.sidebar:
 
         motor_eff = st.number_input("馬達效率 (%)", min_value=0.0, max_value=100.0, value=90.0, step=1.0)
         
-        # 效率地圖上傳（支援寬格式）
+        # ---------- 效率地圖上傳（支援寬格式，靜默處理）----------
         st.markdown("#### 📊 馬達效率地圖 (選用)")
         eff_file = st.file_uploader("上傳效率地圖 CSV", type=["csv"], key="eff_map")
         eff_interpolator = None
@@ -515,7 +514,6 @@ with st.sidebar:
         if eff_file is not None and SCIPY_AVAILABLE:
             try:
                 df_eff_raw = pd.read_csv(eff_file)
-                st.info(f"原始檔案欄位：{list(df_eff_raw.columns)}")
                 first_col = df_eff_raw.columns[0]
                 other_cols = df_eff_raw.columns[1:]
                 is_wide_format = False
@@ -524,7 +522,7 @@ with st.sidebar:
                         is_wide_format = True
                 
                 if is_wide_format:
-                    st.warning("偵測到「寬格式」效率地圖 (轉速 + 扭矩百分比欄位)。請輸入馬達峰值扭矩以換算實際扭矩值。")
+                    # 靜默取得峰值扭矩（不輸出警告）
                     if est_mode == '手動輸入' and 'manual_peak_torque' in locals() and manual_peak_torque is not None:
                         default_peak_torque = manual_peak_torque
                     else:
@@ -550,7 +548,7 @@ with st.sidebar:
                             if not np.isnan(rpm_val) and not np.isnan(eff_val) and eff_val >= 0:
                                 records.append({'rpm': rpm_val, 'torque': torque_actual, 'efficiency': eff_val})
                     df_eff_converted = pd.DataFrame(records)
-                    st.success(f"已將寬格式轉換為長格式，共 {len(df_eff_converted)} 筆資料 (扭矩範圍 {df_eff_converted['torque'].min():.1f} ~ {df_eff_converted['torque'].max():.1f} Nm)")
+                    st.success(f"✅ 成功讀取寬格式效率地圖，共 {len(df_eff_converted)} 筆資料 (扭矩範圍 {df_eff_converted['torque'].min():.1f} ~ {df_eff_converted['torque'].max():.1f} Nm)")
                 else:
                     rpm_candidates = [c for c in df_eff_raw.columns if 'rpm' in c.lower() or '轉速' in c]
                     torque_candidates = [c for c in df_eff_raw.columns if 'torque' in c.lower() or '扭矩' in c or '扭力' in c]
@@ -564,17 +562,17 @@ with st.sidebar:
                     df_eff_converted = df_eff_raw[[rpm_col, torque_col, eff_col]].copy()
                     df_eff_converted.columns = ['rpm', 'torque', 'efficiency']
                     df_eff_converted = df_eff_converted.dropna()
-                    st.success(f"成功讀取標準格式效率地圖，共 {len(df_eff_converted)} 筆資料")
+                    st.success(f"✅ 成功讀取效率地圖，共 {len(df_eff_converted)} 筆資料")
                 
                 if df_eff_converted is not None and len(df_eff_converted) > 0:
                     eff_interpolator = build_efficiency_interpolator(df_eff_converted)
                     st.session_state.df_eff_converted = df_eff_converted
                 else:
-                    st.error("無有效效率數據")
+                    st.error("❌ 無有效效率數據")
             except Exception as e:
-                st.error(f"讀取效率地圖失敗: {e}")
+                st.error(f"❌ 讀取效率地圖失敗: {e}")
         elif eff_file is not None and not SCIPY_AVAILABLE:
-            st.error("需要安裝 SciPy 才能使用效率地圖功能。")
+            st.error("❌ 需要安裝 SciPy 才能使用效率地圖功能。")
 
     with st.expander("🔹 齒輪 (Gear)", expanded=True):
         gear_option = st.radio("減速比", ['自動估算', '手動輸入'], index=1)
@@ -888,7 +886,7 @@ fig3.update_xaxes(title_text="時間 (秒)")
 fig3.update_yaxes(title_text="車速 (km/h)", secondary_y=False)
 fig3.update_yaxes(title_text="位移 (m)", secondary_y=True)
 st.plotly_chart(fig3, use_container_width=True)
-# 將原本位於圖6的提示移到圖3下方
+# 將提示移到圖3下方
 st.caption("💡 提示：圖中紫色虛線為目標 0→50 km/h 加速時間，棕色虛線為目標 0→最高車速加速時間。")
 st.markdown("---")
 
@@ -984,7 +982,6 @@ if "df_wltc_clean" in st.session_state and SCIPY_AVAILABLE:
         st.markdown("---")
         st.markdown("### 📊 本次工況實際計算範例")
         
-        # 取得目前側邊欄與計算結果中的關鍵數值
         try:
             m_kg = total_mass
             fr_val = fr
@@ -1002,7 +999,6 @@ if "df_wltc_clean" in st.session_state and SCIPY_AVAILABLE:
             net_wh = total_energy_wh
             range_km = estimated_range_km
             
-            # 馬達峰值扭矩（若有使用效率地圖）
             peak_torque_val = None
             if 'peak_torque_input' in locals() and peak_torque_input is not None:
                 peak_torque_val = peak_torque_input
@@ -1049,7 +1045,6 @@ if "df_wltc_clean" in st.session_state and SCIPY_AVAILABLE:
             **✍️ 計算過程舉例（選取某個時間點，例如最高功率點）**  
             """)
             
-            # 找出典型驅動點
             if 'times' in locals() and len(times) > 0 and 'power_batt_w' in locals():
                 pos_power_mask = power_batt_w > 0
                 if np.any(pos_power_mask):
@@ -1128,7 +1123,6 @@ if "df_wltc_clean" in st.session_state and SCIPY_AVAILABLE and eff_interpolator 
         work_torque = df_operating['motor_torque_Nm'].values
         eff_at_points = eff_interpolator(work_rpm, work_torque)
         
-        # 判斷超出極限
         max_torque_interp = np.interp(work_rpm, n, T_motor_max, left=0, right=0)
         exceed_mask = work_torque > (max_torque_interp + 1e-3)
         
