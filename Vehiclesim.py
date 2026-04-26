@@ -321,6 +321,19 @@ def compute_theoretical_energy_consumption(df_cycle, mass, area, cd, fr, gear_ef
     
     return wh_per_km_batt, wh_per_km_wheel, distance_km, total_energy_wh, drive_energy_wh, regen_energy_wh, times, P_batt, energy_wh_cumulative
 
+# ================== 求交點函數 ==================
+def find_intersection(x1, y1, x2, y2):
+    """求兩條曲線的交點 (x1,y1) 和 (x2,y2)"""
+    y2_interp = np.interp(x1, x2, y2)
+    diff = y1 - y2_interp
+    intersections = []
+    for i in range(len(x1)-1):
+        if diff[i] * diff[i+1] <= 0:
+            # 線性內插交點
+            x_cross = x1[i] - diff[i] * (x1[i+1] - x1[i]) / (diff[i+1] - diff[i])
+            y_cross = np.interp(x_cross, x1, y1)
+            intersections.append((x_cross, y_cross))
+    return intersections
 
 # ================== 自訂 JSON 渲染 ==================
 LIGHT_BLUE = "#87CEEB"
@@ -742,7 +755,7 @@ with st.expander("🔁 轉換係數", expanded=False):
 
 st.markdown("---")
 
-# ================== 圖1：馬達 TN 曲線 + 功率曲線 + 工作點 ==================
+# ================== 圖1：馬達 TN (含功率&工作點) ==================
 st.markdown("## 📈 圖1：馬達 TN (含功率&工作點)")
 
 x_upper = n_max_motor * 1.1
@@ -823,7 +836,7 @@ fig1.update_layout(legend=dict(orientation="h", yanchor="bottom", y=1.02, xancho
 st.plotly_chart(fig1, use_container_width=True)
 st.markdown("---")
 
-# ================== 圖2：車輪推力 vs 車速 + 工作點 ==================
+# ================== 圖2：車輪推力(含工作點) ==================
 st.markdown("## 📈 圖2：車輪推力(含工作點)")
 
 idx_design = np.argmin(np.abs(speed_kmh_flat - speed_kmh))
@@ -862,7 +875,6 @@ if "df_motor_operating_points" in st.session_state:
     fig2.add_trace(go.Scatter(x=df_op['speed_kmh'], y=wheel_force_op, mode='markers', marker=dict(size=4, color='cyan', opacity=0.6, symbol='circle'), name='工作點', showlegend=True))
 
 # ---------- 新增：平路負載線與最大車輪推力曲線的交點 ----------
-# 注意：v_from_n 對應的 x 是車速 (km/h)，F_wheel_max 對應 y；speed_kmh_flat 對應 x，F_wheel_flat 對應 y
 intersections_flat_force = find_intersection(v_from_n, F_wheel_max, speed_kmh_flat, F_wheel_flat)
 for x_cross, y_cross in intersections_flat_force:
     fig2.add_trace(go.Scatter(
