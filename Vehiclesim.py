@@ -811,7 +811,6 @@ F_wheel_peak = F_wheel_max.max()
 grid_step_force = F_wheel_peak / 4.0 if F_wheel_peak > 0 else 10
 y_min_raw_f = min(0, F_wheel_max.min(), F_wheel_flat.min())
 if "df_motor_operating_points" in st.session_state:
-    # 將工作點的輪上扭矩轉為推力
     wheel_force_op = st.session_state.df_motor_operating_points['wheel_torque_Nm'] / wheel_radius_m
     min_op_f = wheel_force_op.min()
     if not np.isnan(min_op_f): y_min_raw_f = min(y_min_raw_f, min_op_f)
@@ -916,20 +915,10 @@ if "df_wltc_clean" in st.session_state and SCIPY_AVAILABLE:
     c2.metric("⚙️ 輪上能耗", f"{wh_per_km_wheel:.2f} Wh/km")
     c3.metric("🔋 電池端輸出能耗", f"{wh_per_km_batt:.2f} Wh/km")
     
-    # 新增能耗關係說明
-    st.markdown("""
-    **🔁 能耗傳遞鏈**  
-    電池輸出 → 驅動輸出 (控制器+馬達+齒輪) → 輪上  
-    - 電池端輸出能耗：從電池取用的總能量（含驅動與回收淨額）  
-    - 驅動輸出能耗：實際用於驅動車輛的電能（不含回收）  
-    - 輪上能耗：最終作用於車輪的機械能
-    """)
-    
     st.markdown("#### 🔋 續航里程估算結果")
-    cc1, cc2, cc3 = st.columns(3)
+    cc1, cc2 = st.columns(2)
     cc1.metric("⚡ 可用總能量", f"{usable_energy_wh:.1f} Wh")
     cc2.metric("🎯 理論預估里程", f"{estimated_range_km:.1f} km", delta=f"基於 {user_battery_energy_kwh:.1f}kWh 電池")
-    cc3.metric("📈 驅動輸出能耗", f"{drive_energy_wh:.1f} Wh")
     
     fig5 = make_subplots(specs=[[{"secondary_y": True}]])
     power_pos = np.maximum(power_batt_w, 0)
@@ -1038,9 +1027,8 @@ if "df_wltc_clean" in st.session_state and SCIPY_AVAILABLE:
 
             **📈 [行駛工況逐秒積分運算結果]**  
             - **工況單圈總距離**: {dist_km:.3f} km  
-            - **驅動輸出能耗 (電池端)**: {drive_wh / dist_km:.2f} Wh/km (總計 {drive_wh:.2f} Wh)  
+            - **電池端輸出能耗**: {wh_km_batt:.2f} Wh/km (對應 {net_wh:.1f} Wh)  
             - **回收充電 (電池端)**: {regen_wh / dist_km:.2f} Wh/km (總計 {regen_wh:.2f} Wh)  
-            - **電池端輸出能耗**: {wh_km_batt:.2f} Wh/km  
             - **理論預估續航里程**: {range_km:.1f} 公里  
 
             **✍️ 計算過程舉例（選取某個時間點，例如最高功率點）**  
