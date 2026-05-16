@@ -9,25 +9,16 @@ import re
 
 # ================== 版本歷史記錄 (僅供開發參考，不顯示於 UI) ==================
 """
+v3.2 (2026-05-16)
+- 新增「再生煞車效率」獨立設定 (原固定與驅動效率相同)。
+- 新增「待機功率 (Standby Power)」設定，模擬車輛靜止時持續耗電。
+- 能耗計算與續航預估同步納入以上兩個新參數。
+
 v3.1 (2026-04-26)
-- 圖1、圖2：負載線與馬達最大扭矩/車輪推力曲線的交點新增數值標籤 (轉速/車速 + 扭力/推力)。
-- 圖2 改為「車輪推力」取代原有「車輪扭矩」，物理意義更直觀。
-- 簡化主標題與圖表標題。
-- 圖5 移除能耗傳遞鏈說明及「驅動輸出能耗」指標。
-- 歷史版本記錄移至此註解區，使用者不可見。
+- 圖1、圖2交點數值標籤；圖2改為車輪推力；標題與文字優化；移除圖5部分說明與指標；隱藏版本記錄。
 
 v3.0 (2026-04-25)
-- 整合效率地圖支援、能耗積分、里程預估。
-- 新增圖6 (效率地圖等高線與工作點)，超限點標紅 X。
-- 動態計算範例，靜默讀取流程。
-
-v2.1 (2026-04-11)
-- 新增「讀取馬達 TN 曲線」模式，加速模擬支援自訂曲線。
-
-v2.0 (2026-04-06)
-- 整合 WLTC 行駛工況分析、反向動力學計算。
-
-v1.2 (2026-04-06) ... 等詳細記錄請參閱版本記錄文件。
+- 整合效率地圖支援、能耗積分、里程預估。新增圖6 (效率地圖等高線與工作點) 等。
 """
 # ================== 檢查 SciPy 可用性 ==================
 try:
@@ -257,7 +248,7 @@ def compute_motor_operating_points_from_wltc(df_wltc, mass, area, cd, fr, wheel_
     })
     return result_df
 
-# ================== 理論能耗計算函數 ==================
+# ================== 理論能耗計算函數（加入再生效率與待機功率）==================
 def build_efficiency_interpolator(df_eff):
     if df_eff is None:
         return None
@@ -281,7 +272,15 @@ def build_efficiency_interpolator(df_eff):
         return eff_interp
     return interp_func
 
-def compute_theoretical_energy_consumption(df_cycle, mass, area, cd, fr, gear_eff_percent, motor_eff_percent, eff_interpolator=None, df_operating_points=None):
+def compute_theoretical_energy_consumption(df_cycle, mass, area, cd, fr, gear_eff_percent, motor_eff_percent, 
+                                          eff_interpolator=None, df_operating_points=None,
+                                          regen_efficiency_percent=70.0, standby_power_w=0.0):
+    """
+    行駛工況能耗計算
+    新增參數：
+    - regen_efficiency_percent: 再生煞車效率 (%)
+    - standby_power_w: 待機功率 (W)，在整個工況時間內持續消耗
+    """
     times = df_cycle['time'].values
     speeds_kmh = df_cycle['speed_kmh'].values
     accels = df_cycle['accel_ms2'].values
@@ -293,55 +292,72 @@ def compute_theoretical_energy_consumption(df_cycle, mass, area, cd, fr, gear_ef
     F_trac = F_roll + F_aero + F_acc
     P_wheel = F_trac * speeds_ms
     
+    # 驅動與回收效率分離
     if eff_interpolator is not None and df_operating_points is not None:
         motor_rpm = df_operating_points['motor_rpm'].values
         motor_torque = df_operating_points['motor_torque_Nm'].values
-        eff_values = eff_interpolator(motor_rpm, motor_torque)
+        eff_values = eff_interpolator(motor_rpm, motor_torque)  # 馬達驅動效率 (%)
         eff_values = np.clip(eff_values, 1, 100) / 100.0
         eta_gear = gear_eff_percent / 100.0
-        eta_total = eta_gear * eff_values
+        eta_drive_total = eta_gear * eff_values           # 驅動總效率
+        eta_regen_total = eta_gear * (regen_efficiency_percent / 100.0)  # 回收總效率（獨立設定）
     else:
         eta_gear = gear_eff_percent / 100.0
         eta_motor_fixed = motor_eff_percent / 100.0
-        eta_total = eta_gear * eta_motor_fixed
+        eta_drive_total = eta_gear * eta_motor_fixed
+        eta_regen_total = eta_gear * (regen_efficiency_percent / 100.0)
     
+    # 計算電池端功率
     P_batt = np.zeros_like(P_wheel)
     drive_mask = P_wheel >= 0
     regen_mask = P_wheel < 0
     if eff_interpolator is not None and df_operating_points is not None:
-        P_batt[drive_mask] = P_wheel[drive_mask] / eta_total[drive_mask]
-        P_batt[regen_mask] = P_wheel[regen_mask] * eta_total[regen_mask]
+        P_batt[drive_mask] = P_wheel[drive_mask] / eta_drive_total[drive_mask]
+        P_batt[regen_mask] = P_wheel[regen_mask] * eta_regen_total   # 回收時使用獨立效率
     else:
-        P_batt[drive_mask] = P_wheel[drive_mask] / eta_total
-        P_batt[regen_mask] = P_wheel[regen_mask] * eta_total
+        P_batt[drive_mask] = P_wheel[drive_mask] / eta_drive_total
+        P_batt[regen_mask] = P_wheel[regen_mask] * eta_regen_total
     
+    # 待機功率（恆定消耗）
+    P_standby = np.full_like(times, standby_power_w)
+    P_batt_total = P_batt + P_standby   # 總電池功率（待機額外增加耗電）
+    
+    # 分離驅動與回收（不包含待機，待機統一視為耗電）
     P_drive_batt = np.maximum(P_batt, 0)
     P_regen_batt = np.minimum(P_batt, 0)
+    # 待機功率全部算入驅動耗電（因為是固定消耗）
+    P_drive_with_standby = P_drive_batt + P_standby
+    P_regen_only = P_regen_batt
     
     if SCIPY_AVAILABLE:
         try:
             cum_trapz_func = integrate.cumulative_trapezoid
         except AttributeError:
             cum_trapz_func = integrate.cumtrapz
-        energy_wh_cumulative = cum_trapz_func(P_batt, times, initial=0) / 3600.0
+        # 總能量（含待機）
+        energy_wh_cumulative = cum_trapz_func(P_batt_total, times, initial=0) / 3600.0
         total_energy_wh = energy_wh_cumulative[-1]
-        drive_energy_wh = integrate.trapezoid(P_drive_batt, times) / 3600.0
-        regen_energy_wh = integrate.trapezoid(P_regen_batt, times) / 3600.0
+        # 驅動耗電（含待機）
+        drive_energy_wh = integrate.trapezoid(P_drive_with_standby, times) / 3600.0
+        # 回收能量（純回收）
+        regen_energy_wh = integrate.trapezoid(P_regen_only, times) / 3600.0
+        # 輪上機械能
         wheel_energy_wh = integrate.trapezoid(P_wheel, times) / 3600.0
+        # 距離
         distance_km = integrate.trapezoid(speeds_ms, times) / 1000.0
     else:
-        total_energy_wh = np.trapz(P_batt, times) / 3600.0
-        drive_energy_wh = np.trapz(P_drive_batt, times) / 3600.0
-        regen_energy_wh = np.trapz(P_regen_batt, times) / 3600.0
+        total_energy_wh = np.trapz(P_batt_total, times) / 3600.0
+        drive_energy_wh = np.trapz(P_drive_with_standby, times) / 3600.0
+        regen_energy_wh = np.trapz(P_regen_only, times) / 3600.0
         wheel_energy_wh = np.trapz(P_wheel, times) / 3600.0
         distance_km = np.trapz(speeds_ms, times) / 1000.0
         dt = np.diff(times, prepend=times[0])
-        energy_wh_cumulative = np.cumsum(P_batt * dt) / 3600.0
+        energy_wh_cumulative = np.cumsum(P_batt_total * dt) / 3600.0
     
     wh_per_km_batt = total_energy_wh / distance_km if distance_km > 0 else 0
     wh_per_km_wheel = wheel_energy_wh / distance_km if distance_km > 0 else 0
     
-    return wh_per_km_batt, wh_per_km_wheel, distance_km, total_energy_wh, drive_energy_wh, regen_energy_wh, times, P_batt, energy_wh_cumulative
+    return wh_per_km_batt, wh_per_km_wheel, distance_km, total_energy_wh, drive_energy_wh, regen_energy_wh, times, P_batt_total, energy_wh_cumulative
 
 # ================== 求交點函數 ==================
 def find_intersection(x1, y1, x2, y2):
@@ -524,8 +540,16 @@ with st.sidebar:
                 except Exception as e:
                     st.error(f"解析檔案失敗: {e}")
 
-        motor_eff = st.number_input("馬達效率 (%)", min_value=0.0, max_value=100.0, value=90.0, step=1.0)
+        motor_eff = st.number_input("馬達驅動效率 (%)", min_value=0.0, max_value=100.0, value=90.0, step=1.0,
+                                    help="馬達將電能轉換為機械能的效率（驅動模式）")
         
+        # ---------- 新增：再生煞車效率與待機功率 ----------
+        st.markdown("#### 🔋 能量管理參數")
+        regen_efficiency = st.number_input("再生煞車效率 (%)", min_value=0.0, max_value=100.0, value=70.0, step=5.0,
+                                           help="煞車回收時，馬達將機械能轉換為電能並存入電池的效率。一般低於驅動效率。")
+        standby_power = st.number_input("待機功率 (W)", min_value=0, max_value=2000, value=100, step=10,
+                                        help="車輛啟動但靜止時（例如等紅燈）持續消耗的電器功率（空調、螢幕、控制器等）。")
+
         # ---------- 效率地圖上傳（支援寬格式，靜默處理）----------
         st.markdown("#### 📊 馬達效率地圖 (選用)")
         eff_file = st.file_uploader("上傳效率地圖 CSV", type=["csv"], key="eff_map")
@@ -823,7 +847,6 @@ if "df_motor_operating_points" in st.session_state:
 # ---------- 平路負載線與馬達最大扭矩曲線的交點（含數值標示）----------
 intersections_flat = find_intersection(n, T_motor_max, motor_rpm_flat, torque_flat)
 for idx, (x_cross, y_cross) in enumerate(intersections_flat):
-    # 標記點
     fig1.add_trace(go.Scatter(
         x=[x_cross], y=[y_cross], mode='markers',
         marker=dict(color='red', size=10, symbol='x'),
@@ -831,7 +854,6 @@ for idx, (x_cross, y_cross) in enumerate(intersections_flat):
         text=f"平路交點<br>轉速: {x_cross:.0f} rpm<br>扭矩: {y_cross:.1f} Nm",
         hoverinfo='text'
     ))
-    # 數值標示（偏移避免重疊）
     fig1.add_annotation(
         x=x_cross, y=y_cross,
         text=f"<b>{x_cross:.0f} rpm, {y_cross:.1f} Nm</b>",
@@ -1018,7 +1040,8 @@ if "df_wltc_clean" in st.session_state and SCIPY_AVAILABLE:
     motor_eff_val = motor_eff if 'motor_eff' in locals() else 90.0
     
     wh_per_km_batt, wh_per_km_wheel, total_dist_km, total_energy_wh, drive_energy_wh, regen_energy_wh, times, power_batt_w, energy_cum = compute_theoretical_energy_consumption(
-        df_energy, total_mass, area, cd, fr, gear_eff_val, motor_eff_val, eff_interpolator, df_operating
+        df_energy, total_mass, area, cd, fr, gear_eff_val, motor_eff_val, eff_interpolator, df_operating,
+        regen_efficiency_percent=regen_efficiency, standby_power_w=standby_power
     )
     
     usable_energy_wh = user_battery_energy_kwh * 1000 * (battery_soc / 100.0)
@@ -1037,7 +1060,7 @@ if "df_wltc_clean" in st.session_state and SCIPY_AVAILABLE:
     fig5 = make_subplots(specs=[[{"secondary_y": True}]])
     power_pos = np.maximum(power_batt_w, 0)
     power_neg = np.minimum(power_batt_w, 0)
-    fig5.add_trace(go.Scatter(x=times, y=power_pos, mode='lines', fill='tozeroy', name='驅動輸出 (W)', line=dict(color='crimson', width=1)), secondary_y=False)
+    fig5.add_trace(go.Scatter(x=times, y=power_pos, mode='lines', fill='tozeroy', name='驅動輸出+待機 (W)', line=dict(color='crimson', width=1)), secondary_y=False)
     fig5.add_trace(go.Scatter(x=times, y=power_neg, mode='lines', fill='tozeroy', name='動能回收 (W)', line=dict(color='seagreen', width=1)), secondary_y=False)
     fig5.add_trace(go.Scatter(x=times, y=energy_cum, mode='lines', name='累積淨耗電 (Wh)', line=dict(color='gold', width=3, dash='solid')), secondary_y=True)
     fig5.update_xaxes(title_text="時間 (秒)", zeroline=True, zerolinecolor='gray')
@@ -1062,19 +1085,20 @@ if "df_wltc_clean" in st.session_state and SCIPY_AVAILABLE:
         $$
 
         **3. 馬達效率查表 (效率地圖)**  
-        根據馬達轉速 $n$ 與扭力 $T$，利用二維線性插值取得即時效率 $\eta_{\text{motor}}(n, T)$。  
+        根據馬達轉速 $n$ 與扭力 $T$，利用二維線性插值取得即時效率 $\eta_{\text{motor}}(n, T)$（驅動模式）。  
         若未上傳效率地圖，則使用固定效率 $\eta_{\text{motor}}$。
 
-        **4. 總效率 (驅動/回收)**  
-        - 驅動模式：$\eta_{\text{total}} = \eta_{\text{gear}} \times \eta_{\text{motor}}$  
-        - 回收模式：$\eta_{\text{total}} = \eta_{\text{gear}} \times \eta_{\text{motor}}$（回收時功率反向，效率仍相乘）
+        **4. 總效率 (驅動與回收分離)**  
+        - 驅動模式：$\eta_{\text{total\_drive}} = \eta_{\text{gear}} \times \eta_{\text{motor}}$  
+        - 回收模式：$\eta_{\text{total\_regen}} = \eta_{\text{gear}} \times \eta_{\text{regen}}$，其中 $\eta_{\text{regen}}$ 為再生煞車效率（使用者設定）
 
         **5. 電池端功率 (W)**  
-        - 驅動時：$P_{\text{batt}} = P_{\text{wheel}} / \eta_{\text{total}}$  
-        - 回收時：$P_{\text{batt}} = P_{\text{wheel}} \times \eta_{\text{total}}$（$P_{\text{wheel}}<0$ 表示減速回收）
+        - 驅動時：$P_{\text{batt}} = P_{\text{wheel}} / \eta_{\text{total\_drive}}$  
+        - 回收時：$P_{\text{batt}} = P_{\text{wheel}} \times \eta_{\text{total\_regen}}$（$P_{\text{wheel}}<0$ 表示減速回收）  
+        - 待機功率 $P_{\text{standby}}$ 始終加入：$P_{\text{batt\_total}} = P_{\text{batt}} + P_{\text{standby}}$
 
         **6. 累積能耗與里程估算**  
-        - 累積耗電 (Wh)：$E_{\text{batt}} = \frac{1}{3600} \int P_{\text{batt}} \, dt$  
+        - 累積耗電 (Wh)：$E_{\text{batt}} = \frac{1}{3600} \int P_{\text{batt\_total}} \, dt$  
         - 行駛距離 (km)：$D = \frac{1}{1000} \int v \, dt$  
         - 每公里能耗 (Wh/km)：$\text{EC} = \frac{E_{\text{batt}}}{D}$  
         - 預估里程 (km)：$\text{Range} = \frac{E_{\text{usable}}}{\text{EC}}$，其中 $E_{\text{usable}} = E_{\text{battery}} \times \text{SOC} / 100$
@@ -1095,12 +1119,14 @@ if "df_wltc_clean" in st.session_state and SCIPY_AVAILABLE:
             gear_eff_val = gear_eff / 100.0
             battery_kwh = user_battery_energy_kwh
             soc = battery_soc
+            regen_eff_val = regen_efficiency
+            standby_val = standby_power
             
             dist_km = total_dist_km
             wh_km_batt = wh_per_km_batt
+            net_wh = total_energy_wh
             drive_wh = drive_energy_wh
             regen_wh = regen_energy_wh
-            net_wh = total_energy_wh
             range_km = estimated_range_km
             
             peak_torque_val = None
@@ -1118,6 +1144,8 @@ if "df_wltc_clean" in st.session_state and SCIPY_AVAILABLE:
             - **總質量**: {m_kg} kg (車重 {weight} kg + 載重 {load} kg)  
             - **阻力設定**: $C_d = {cd_val}$, 迎風面積 $A = {area_val} \, \\text{{m}}^2$, 滾阻 $f_r = {fr_val}$  
             - **傳動幾何**: 輪胎半徑 {wheel_radius_m:.4f} m, 齒輪比 {gear_ratio_val:.1f}, 齒輪效率 {gear_eff}%  
+            - **再生煞車效率**: {regen_eff_val}%  
+            - **待機功率**: {standby_val} W  
             """)
             
             if use_eff_map:
@@ -1133,7 +1161,7 @@ if "df_wltc_clean" in st.session_state and SCIPY_AVAILABLE:
                     """)
             else:
                 st.markdown(f"""
-            - **馬達效率**: 使用固定效率 {motor_eff_val}% (未上傳效率地圖)。  
+            - **馬達驅動效率**: 使用固定效率 {motor_eff_val}% (未上傳效率地圖)。  
                 """)
             
             st.markdown(f"""
@@ -1179,10 +1207,11 @@ if "df_wltc_clean" in st.session_state and SCIPY_AVAILABLE:
                     - 總阻力：$F_\\text{{total}} = {F_total:.1f}\\,\\text{{N}}$  
                     - 輪上功率：$P_\\text{{wheel}} = {F_total:.1f} \\times {v_ms:.2f} = {P_wheel_ex:.0f}\\,\\text{{W}}$  
                     - 馬達工作點：轉速 {rpm_ex:.0f} rpm，扭矩 {torque_ex:.1f} Nm  
-                    - 馬達效率（查表）：$\\eta_\\text{{motor}} = {eff_motor:.1f}\\%$  
-                    - 總效率：$\\eta_\\text{{total}} = {gear_eff}% \\times {eff_motor:.1f}\\% = {gear_eff_val * (eff_motor/100) * 100:.1f}\\%$  
-                    - 電池端功率：$P_\\text{{batt}} = {P_wheel_ex:.0f} / {gear_eff_val * (eff_motor/100):.3f} = {power_batt_w[orig_idx]:.0f}\\,\\text{{W}}$  
-                    - 該點瞬間能耗率即為 $P_\\text{{batt}}$，對全工況時間積分後得到總耗電 {net_wh:.1f} Wh。
+                    - 馬達驅動效率（查表）：$\\eta_\\text{{motor}} = {eff_motor:.1f}\\%$  
+                    - 總驅動效率：$\\eta_\\text{{total}} = {gear_eff}% \\times {eff_motor:.1f}\\% = {gear_eff_val * (eff_motor/100) * 100:.1f}\\%$  
+                    - 電池端功率（不含待機）：$P_\\text{{batt}} = {P_wheel_ex:.0f} / {gear_eff_val * (eff_motor/100):.3f} = {power_batt_w[orig_idx] - standby_val:.0f}\\,\\text{{W}}$  
+                    - 加上待機功率 {standby_val} W 後，總電池功率為 {power_batt_w[orig_idx]:.0f} W。  
+                    - 對全工況時間積分後得到總耗電 {net_wh:.1f} Wh。
                         """)
                     else:
                         st.markdown(f"""
@@ -1190,9 +1219,10 @@ if "df_wltc_clean" in st.session_state and SCIPY_AVAILABLE:
                     - 行駛阻力：$F_\\text{{roll}} = {F_roll:.1f}\\,\\text{{N}}$，$F_\\text{{aero}} = {F_aero:.1f}\\,\\text{{N}}$，$F_\\text{{acc}} = {F_acc:.1f}\\,\\text{{N}}$  
                     - 總阻力：$F_\\text{{total}} = {F_total:.1f}\\,\\text{{N}}$  
                     - 輪上功率：$P_\\text{{wheel}} = {P_wheel_ex:.0f}\\,\\text{{W}}$  
-                    - 固定馬達效率 {motor_eff_val}%，總效率 $\\eta_\\text{{total}} = {gear_eff}% \\times {motor_eff_val}% = {gear_eff_val * (motor_eff_val/100) * 100:.1f}\\%$  
-                    - 電池端功率：$P_\\text{{batt}} = {P_wheel_ex:.0f} / {(gear_eff_val * (motor_eff_val/100)):.3f} = {power_batt_w[orig_idx]:.0f}\\,\\text{{W}}$  
-                    - 該點瞬間能耗率即為 $P_\\text{{batt}}$，對全工況時間積分後得到總耗電 {net_wh:.1f} Wh。
+                    - 固定馬達驅動效率 {motor_eff_val}%，總驅動效率 $\\eta_\\text{{total}} = {gear_eff}% \\times {motor_eff_val}% = {gear_eff_val * (motor_eff_val/100) * 100:.1f}\\%$  
+                    - 電池端功率（不含待機）：$P_\\text{{batt}} = {P_wheel_ex:.0f} / {(gear_eff_val * (motor_eff_val/100)):.3f} = {power_batt_w[orig_idx] - standby_val:.0f}\\,\\text{{W}}$  
+                    - 加上待機功率 {standby_val} W 後，總電池功率為 {power_batt_w[orig_idx]:.0f} W。  
+                    - 對全工況時間積分後得到總耗電 {net_wh:.1f} Wh。
                         """)
                 else:
                     st.markdown("> 無法找到典型的驅動功率點，跳過詳細計算舉例。")
@@ -1210,7 +1240,7 @@ if "df_wltc_clean" in st.session_state and SCIPY_AVAILABLE and eff_interpolator 
     df_operating = st.session_state.df_motor_operating_points if "df_motor_operating_points" in st.session_state else None
     if df_operating is not None:
         st.markdown("## 📈 圖6：馬達效率地圖與工作點分佈")
-        st.caption("等高線為效率地圖（%），散點為行駛工況下的馬達操作點，顏色代表該點的效率值。紅色點表示該工作點所需扭矩超過馬達極限（無法滿足）。")
+        st.caption("等高線為驅動效率地圖（%），散點為行駛工況下的馬達操作點，顏色代表該點的驅動效率值。紅色點表示該工作點所需扭矩超過馬達極限（無法滿足）。")
         
         rpm_vals = df_eff_final['rpm'].values
         torque_vals = df_eff_final['torque'].values
